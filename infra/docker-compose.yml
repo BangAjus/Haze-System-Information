@@ -1,0 +1,72 @@
+name: haze
+
+x-app-env: &app-env
+  env_file: ../.env
+  environment:
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    HAZE_DATA_DIR: /opt/haze/data
+    DAGSTER_HOME: /opt/dagster/home
+
+services:
+  postgres:
+    image: postgres:16
+    env_file: ../.env
+    ports: ["${POSTGRES_HOST_PORT:-5432}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 10
+
+  mlflow:
+    build: { context: ./mlflow }
+    # List form: every flag reaches mlflow. (A folded ">" block kept line breaks, so sh ran
+    # only the first line and silently dropped the backend store and allowed hosts.)
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+      - --artifacts-destination=/mlartifacts
+      - --allowed-hosts=mlflow:5000,localhost:${MLFLOW_HOST_PORT:-5001},127.0.0.1:${MLFLOW_HOST_PORT:-5001}
+    env_file: ../.env
+    ports: ["${MLFLOW_HOST_PORT:-5001}:5000"]
+    volumes: [mlartifacts:/mlartifacts]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  dagster-webserver:
+    build: { context: .., dockerfile: infra/Dockerfile }
+    <<: *app-env
+    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/home/workspace.yaml
+    ports: ["${DAGSTER_HOST_PORT:-3000}:3000"]
+    # Kaggle token is mounted read-only from your Mac rather than copied into .env
+    volumes: [rawdata:/opt/haze/data, "${HOME}/.kaggle:/root/.kaggle:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  dagster-daemon:
+    build: { context: .., dockerfile: infra/Dockerfile }
+    <<: *app-env
+    command: dagster-daemon run -w /opt/dagster/home/workspace.yaml
+    volumes: [rawdata:/opt/haze/data, "${HOME}/.kaggle:/root/.kaggle:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: { context: .., dockerfile: infra/Dockerfile }
+    <<: *app-env
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ports: ["${API_HOST_PORT:-8000}:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  mlartifacts:
+  rawdata:

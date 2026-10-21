@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    description: Loaded by the Dagster asset raw/weather_air_snapshots.
+    tables:
+      - name: weather_air_snapshots
+        description: >
+          The Kaggle file as-is (full history, one row per city per daily collection),
+          plus _source, _file, _ingested_at and _dagster_run_id.
+        loaded_at_field: _ingested_at
+        freshness:
+          warn_after: { count: 26, period: hour }
+          error_after: { count: 50, period: hour }

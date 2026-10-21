@@ -1,0 +1,727 @@
+<title>Haze Architecture Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: sticky table of contents on the left, one reading column on the right; stacks to a single column on phones. */
+:root {
+  --bg: #f3f5f6;
+  --surface: #ffffff;
+  --fg: #18222b;
+  --muted: #5a6872;
+  --line: #d9e0e4;
+  --accent: #1f6f8b;
+  --accent-soft: #e2eff4;
+  --code-bg: #eaeef1;
+  /* OpenWeather AQI scale 1–5 */
+  --aqi1: #2f9e5b; --aqi2: #8bb03a; --aqi3: #d9a21b; --aqi4: #d9622b; --aqi5: #a3324a;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11181d; --surface: #182229; --fg: #e3e9ec; --muted: #94a3ad; --line: #2a3740;
+    --accent: #6cbad6; --accent-soft: #1b3440; --code-bg: #1f2b33;
+    --aqi1: #4cc07a; --aqi2: #a9c95a; --aqi3: #e8b93f; --aqi4: #ee8152; --aqi5: #d9667e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11181d; --surface: #182229; --fg: #e3e9ec; --muted: #94a3ad; --line: #2a3740;
+  --accent: #6cbad6; --accent-soft: #1b3440; --code-bg: #1f2b33;
+  --aqi1: #4cc07a; --aqi2: #a9c95a; --aqi3: #e8b93f; --aqi4: #ee8152; --aqi5: #d9667e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 17px; line-height: 1.6;
+}
+.wrap {
+  max-width: 1180px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 80px;
+  display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px;
+}
+@media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-block: 24px 56px; } }
+
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 15px; }
+nav.toc .label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; counter-reset: t; }
+nav.toc li { counter-increment: t; }
+nav.toc a { display: block; padding: 4px 8px; border-radius: 6px; color: var(--fg); text-decoration: none; }
+nav.toc a::before { content: counter(t, decimal-leading-zero) "  "; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+nav.toc a:hover, nav.toc a:focus-visible { background: var(--accent-soft); outline: none; }
+@media (max-width: 860px) {
+  nav.toc { position: static; }
+  nav.toc ol { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
+
+main { min-width: 0; }
+header.doc { display: grid; gap: 12px; padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--accent); font-weight: 700; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2rem, 4.5vw, 2.9rem); font-weight: 700; letter-spacing: -.01em; }
+h2 { font-size: 1.65rem; font-weight: 700; }
+h3 { font-size: 1.15rem; font-weight: 700; }
+.lede { font-size: 1.15rem; color: var(--muted); max-width: 62ch; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; color: var(--muted); }
+.aqi-strip { display: flex; height: 6px; border-radius: 3px; overflow: hidden; max-width: 320px; }
+.aqi-strip span { flex: 1; }
+
+section { padding-top: 48px; display: grid; gap: 16px; scroll-margin-top: 16px; }
+section > p, section > ul, section > ol { max-width: 68ch; margin: 0; }
+section ul, section ol { padding-left: 1.2em; }
+section li + li { margin-top: 4px; }
+.sec-num { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.sec-head { display: grid; gap: 4px; }
+
+code, .mono { font-family: var(--font-mono); font-size: .86em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+pre.block { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.55; background: var(--code-bg); border-radius: 8px; padding: 16px; margin: 0; overflow-x: auto; }
+
+.callout { border: 1px solid var(--line); border-left: 4px solid var(--aqi3); background: var(--surface); padding: 14px 18px; border-radius: 4px 8px 8px 4px; max-width: 72ch; }
+.callout.warn { border-left-color: var(--aqi4); }
+.callout.ok { border-left-color: var(--aqi1); }
+.callout strong:first-child { display: block; margin-bottom: 2px; }
+.callout p { margin: 0; }
+
+.three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 760px) { .three { grid-template-columns: minmax(0, 1fr); } }
+.product { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 8px; align-content: start; }
+.product .who { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.product p { margin: 0; font-size: 15.5px; }
+
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; }
+
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: none; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; background: var(--bg); }
+td.mono, td code { white-space: nowrap; }
+td .mono { white-space: nowrap; }
+
+.schema-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .schema-grid { grid-template-columns: minmax(0, 1fr); } }
+.schema { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: grid; align-content: start; }
+.schema .sh { padding: 12px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 2px; }
+.schema .sh .name { font-family: var(--font-mono); font-weight: 600; font-size: 14.5px; }
+.schema .sh .desc { font-size: 14px; color: var(--muted); }
+.schema dl { margin: 0; padding: 8px 14px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 14px; font-size: 13.5px; }
+.schema dt { font-family: var(--font-mono); white-space: nowrap; }
+.schema dd { margin: 0; color: var(--muted); }
+.schema dt.pk::after { content: " PK"; color: var(--accent); font-size: 11px; font-weight: 600; }
+
+.pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.pill.get { background: color-mix(in srgb, var(--aqi1) 16%, transparent); color: var(--aqi1); }
+.pill.post { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.pill.put { background: color-mix(in srgb, var(--aqi3) 18%, transparent); color: var(--aqi3); }
+.pill.del { background: color-mix(in srgb, var(--aqi5) 16%, transparent); color: var(--aqi5); }
+.pill.mvp { background: var(--fg); color: var(--bg); }
+.pill.later { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+
+.aqi-scale { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+@media (max-width: 560px) { .aqi-scale { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.aqi-scale div { border-radius: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-top: 5px solid; font-size: 14px; display: grid; gap: 2px; }
+.aqi-scale b { font-family: var(--font-display); font-size: 1.05rem; }
+.aqi-scale span { color: var(--muted); font-family: var(--font-mono); font-size: 12.5px; }
+
+.apps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+@media (max-width: 900px) { .apps { grid-template-columns: minmax(0, 1fr); } }
+.app { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 14px; align-content: start; }
+.app h3 { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.app .stack { font-size: 14px; color: var(--muted); margin: 0; }
+.feat { display: grid; gap: 10px; }
+.feat > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.feat b { font-weight: 600; }
+.feat p { grid-column: 1 / -1; margin: 0; font-size: 15px; color: var(--muted); }
+
+.phases { display: grid; gap: 0; border-left: 2px solid var(--line); margin-left: 6px; }
+.phase { position: relative; padding: 0 0 22px 24px; display: grid; gap: 4px; }
+.phase::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
+.phase .when { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); }
+.phase p { margin: 0; max-width: 68ch; }
+.phase .done { font-size: 15px; color: var(--muted); }
+
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <div class="label">Contents</div>
+  <ol>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#flow">Data flow</a></li>
+    <li><a href="#ingest">Ingestion</a></li>
+    <li><a href="#schemas">Schemas</a></li>
+    <li><a href="#dagster">Dagster assets</a></li>
+    <li><a href="#ml">ML forecasting</a></li>
+    <li><a href="#api">API endpoints</a></li>
+    <li><a href="#apps">The two apps</a></li>
+    <li><a href="#repo">Repo & infra</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#risks">Risks & open questions</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="doc">
+  <div class="eyebrow">Architecture & project plan · v0.1 draft</div>
+  <h1>Haze: a city air-quality pipeline, forecast model, and two apps</h1>
+  <p class="lede">An end-to-end portfolio project built on the Global Weather &amp; Air Pollution dataset. It covers ingestion, warehousing, data quality, orchestration, a PM2.5 forecast model, one API, a web operations dashboard, and an iOS app for everyday users.</p>
+  <div class="aqi-strip" aria-hidden="true"><span style="background:var(--aqi1)"></span><span style="background:var(--aqi2)"></span><span style="background:var(--aqi3)"></span><span style="background:var(--aqi4)"></span><span style="background:var(--aqi5)"></span></div>
+  <div class="meta"><span>Working name: Haze</span><span>Drafted 17 Oct 2026</span><span>Source: <a href="https://www.kaggle.com/datasets/xjoannax88/global-weather-and-air-pollution-dataset">Kaggle · xjoannax88</a> (CC BY 4.0)</span></div>
+</header>
+
+<section id="overview">
+  <div class="sec-head"><span class="sec-num">01</span><h2>Overview</h2></div>
+  <p>The dataset is refreshed daily. Each refresh holds one snapshot of weather and pollutant readings for the three most populous cities in each country, collected from the OpenWeather Current Weather and Air Pollution APIs. Because it keeps growing, it supports a real incremental pipeline rather than a one-off notebook.</p>
+  <p>The project ships three things that share one warehouse and one API:</p>
+  <div class="three">
+    <div class="product"><span class="who">Data engineering</span><h3>Pipeline + ML</h3><p>Dagster orchestrates ingestion, dbt models, data quality checks, feature building, weekly retraining and daily forecasts. Every run writes its own metadata to the warehouse.</p></div>
+    <div class="product"><span class="who">For engineers &amp; analysts</span><h3>Web ops dashboard</h3><p>Pipeline health, data quality, freshness and model accuracy, next to a world map and city explorer for the data itself.</p></div>
+    <div class="product"><span class="who">For the public</span><h3>iOS app</h3><p>Air quality for your city right now, tomorrow's forecast, saved cities, threshold alerts and home-screen widgets.</p></div>
+  </div>
+  <div class="callout ok"><strong>Design principle</strong><p>The monitoring view is not an embedded Airflow or Dagster screen. The pipeline records its own runs, checks and model metrics in <code>ops</code> and <code>ml</code> tables, and the dashboard reads them through the API. Dagster's UI stays available through deep links for debugging.</p></div>
+</section>
+
+<section id="flow">
+  <div class="sec-head"><span class="sec-num">02</span><h2>Data flow</h2></div>
+  <p>Data moves left to right through four layers. Dagster schedules and records every step, and the API is the only thing the apps talk to.</p>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  subgraph SRC[Sources]
+    K[Kaggle dataset<br/>daily refresh]
+    OW[OpenWeather APIs<br/>hourly, phase 2]
+  end
+  subgraph LAKE[Raw files]
+    R[(Parquet<br/>partitioned by ingest_date)]
+  end
+  subgraph WH[Postgres warehouse]
+    RAW[raw.*]
+    STG[staging.*]
+    CORE[core.*]
+    MART[marts.*]
+    ML[ml.*]
+    OPS[ops.*]
+  end
+  subgraph ORCH[Dagster]
+    D[assets · checks · schedules · sensors]
+  end
+  MF[MLflow<br/>tracking + registry]
+  API[FastAPI /v1]
+  WEB[Next.js<br/>ops dashboard]
+  IOS[SwiftUI<br/>iOS app]
+  APNS[APNs push]
+
+  K --> R
+  OW --> R
+  R --> RAW --> STG --> CORE --> MART
+  CORE --> ML
+  ML <--> MF
+  D -. runs .-> R
+  D -. runs dbt .-> STG
+  D -. writes run metadata .-> OPS
+  MART --> API
+  ML --> API
+  OPS --> API
+  API --> WEB
+  API --> IOS
+  API --> APNS --> IOS
+</pre>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Layer</th><th>Lives in</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Raw files</td><td><code>data/raw/source=kaggle/ingest_date=YYYY-MM-DD/*.parquet</code></td><td>Exact copy of what was downloaded, never edited. Replays and backfills start here.</td></tr>
+      <tr><td><code>raw</code></td><td>Postgres</td><td>The raw file loaded as-is, plus lineage columns (<code>_source</code>, <code>_file</code>, <code>_ingested_at</code>).</td></tr>
+      <tr><td><code>staging</code></td><td>dbt views</td><td>Renamed, typed and unit-checked columns. Deduplicated on city and observation time.</td></tr>
+      <tr><td><code>core</code></td><td>dbt tables</td><td>Clean city dimension and observation fact table. The single source of truth.</td></tr>
+      <tr><td><code>marts</code></td><td>dbt tables</td><td>Aggregates shaped for the apps: daily city and country summaries, rankings.</td></tr>
+      <tr><td><code>ml</code> / <code>ops</code></td><td>Python-written tables</td><td>Features, forecasts, model runs, pipeline runs and check results.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="ingest">
+  <div class="sec-head"><span class="sec-num">03</span><h2>Ingestion</h2></div>
+  <h3>Source A: Kaggle (phase 1)</h3>
+  <ul>
+    <li>A Dagster sensor polls the dataset's metadata through the Kaggle API every 30 minutes. When the version number changes, it launches the daily ingest for that date. This avoids guessing what time the author publishes.</li>
+    <li>Download with <code>kaggle datasets download xjoannax88/global-weather-and-air-pollution-dataset</code>. Write the files to the raw folder as Parquet, then load them into <code>raw.weather_air_snapshots</code>.</li>
+    <li>The file may contain the full history rather than only new rows. Either way, the load upserts on <code>(city_key, observed_at_utc)</code>, so rerunning a day is safe.</li>
+    <li>The Kaggle token lives in <code>.env</code> and is passed in through a Dagster resource. It is never committed.</li>
+  </ul>
+  <h3>Source B: OpenWeather directly (phase 2)</h3>
+  <ul>
+    <li>Use the same city list (from <code>core.dim_city</code>) and call the Current Weather and Air Pollution endpoints every hour. This gives 24 readings per city per day instead of one, which helps the forecast model a lot.</li>
+    <li>Several hundred cities times two endpoints per hour adds up quickly. Check the free-tier call limits before turning this on, and keep the request rate low.</li>
+    <li>OpenWeather also has an air pollution history endpoint. It could backfill past PM2.5 readings so the model has more than a few months to learn from.</li>
+  </ul>
+  <h3>City key</h3>
+  <p>The dataset has no city ID. Build a stable surrogate key: <code>city_key = md5(country_code || '|' || lower(city_name) || '|' || round(geo_lat, 2) || '|' || round(geo_lon, 2))</code>. Rounding the coordinates keeps the key stable if the source changes them slightly. Two cities with the same name in one country stay separate.</p>
+</section>
+
+<section id="schemas">
+  <div class="sec-head"><span class="sec-num">04</span><h2>Schemas</h2></div>
+  <p>Timestamps are UTC <code>timestamptz</code>. Pollutant concentrations are µg/m³ as OpenWeather reports them. AQI uses OpenWeather's 1–5 scale. During staging, check what unit the temperature columns use (Kelvin or °C) and store it in °C.</p>
+  <div class="aqi-scale" aria-label="OpenWeather AQI scale">
+    <div style="border-top-color:var(--aqi1)"><b>1 · Good</b><span>PM2.5 &lt; 10</span></div>
+    <div style="border-top-color:var(--aqi2)"><b>2 · Fair</b><span>10–25</span></div>
+    <div style="border-top-color:var(--aqi3)"><b>3 · Moderate</b><span>25–50</span></div>
+    <div style="border-top-color:var(--aqi4)"><b>4 · Poor</b><span>50–75</span></div>
+    <div style="border-top-color:var(--aqi5)"><b>5 · Very poor</b><span>≥ 75</span></div>
+  </div>
+  <p style="font-size:14.5px;color:var(--muted)">PM2.5 ranges in µg/m³, taken from OpenWeather's published breakpoints. Confirm them against the current docs. OpenWeather's AQI is the worst level across all pollutants, so an AQI derived from PM2.5 alone is only an approximation.</p>
+
+  <h3>raw, staging, core</h3>
+  <div class="schema-grid">
+    <div class="schema">
+      <div class="sh"><span class="name">raw.weather_air_snapshots</span><span class="desc">Every source column as text or numeric, unchanged</span></div>
+      <dl>
+        <dt>…all source columns</dt><dd>temp, pm2_5, city_name, weather_time_utc, …</dd>
+        <dt>_source</dt><dd><code>kaggle</code> | <code>openweather</code></dd>
+        <dt>_file</dt><dd>raw Parquet path</dd>
+        <dt>_ingested_at</dt><dd>load time</dd>
+        <dt>_dagster_run_id</dt><dd>for lineage back to the run</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">core.dim_city</span><span class="desc">One row per city</span></div>
+      <dl>
+        <dt class="pk">city_key</dt><dd>text, surrogate hash</dd>
+        <dt>city_name</dt><dd>text</dd>
+        <dt>country_code</dt><dd>char(2)</dd>
+        <dt>country_name</dt><dd>text</dd>
+        <dt>continent</dt><dd>text</dd>
+        <dt>population</dt><dd>bigint</dd>
+        <dt>lat, lon</dt><dd>double</dd>
+        <dt>first_seen_at</dt><dd>timestamptz</dd>
+        <dt>is_active</dt><dd>bool, still appears in recent files</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">core.fct_observation</span><span class="desc">One row per city per observation</span></div>
+      <dl>
+        <dt class="pk">city_key</dt><dd>→ dim_city</dd>
+        <dt class="pk">observed_at_utc</dt><dd>from weather_time_utc</dd>
+        <dt>collected_at_utc</dt><dd>when the API was called</dd>
+        <dt>temp_c, feels_like_c</dt><dd>numeric</dd>
+        <dt>humidity_pct, pressure_hpa</dt><dd>numeric</dd>
+        <dt>wind_speed_ms, wind_deg, wind_gust_ms</dt><dd>numeric</dd>
+        <dt>clouds_pct, visibility_m</dt><dd>numeric</dd>
+        <dt>rain_1h_mm, snow_1h_mm</dt><dd>numeric, null → 0</dd>
+        <dt>aqi</dt><dd>smallint 1–5</dd>
+        <dt>pm2_5, pm10</dt><dd>numeric µg/m³</dd>
+        <dt>co, no, no2, o3, so2, nh3</dt><dd>numeric µg/m³</dd>
+        <dt>is_daytime</dt><dd>bool</dd>
+        <dt>source</dt><dd>kaggle | openweather</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">staging.stg_observations</span><span class="desc">dbt view between raw and core</span></div>
+      <dl>
+        <dt>casts</dt><dd>text → numeric / timestamptz</dd>
+        <dt>units</dt><dd>temperature normalised to °C</dd>
+        <dt>dedupe</dt><dd><code>row_number()</code> over (city_key, observed_at_utc), keep latest <code>_ingested_at</code></dd>
+        <dt>drops</dt><dd>the dataset's own derived and target columns (temp_category, comfort_proxy, target_*). These are rebuilt downstream where needed.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h3>marts</h3>
+  <div class="schema-grid">
+    <div class="schema">
+      <div class="sh"><span class="name">marts.city_daily</span><span class="desc">Feeds city pages, history charts and the map</span></div>
+      <dl>
+        <dt class="pk">city_key</dt><dd></dd>
+        <dt class="pk">date_utc</dt><dd>date</dd>
+        <dt>n_obs</dt><dd>1 in phase 1, up to 24 in phase 2</dd>
+        <dt>aqi_max, aqi_mode</dt><dd>smallint</dd>
+        <dt>pm25_mean, pm25_max</dt><dd>numeric</dd>
+        <dt>pm10_mean</dt><dd>numeric</dd>
+        <dt>temp_c_mean, humidity_mean, wind_ms_mean</dt><dd>numeric</dd>
+        <dt>pm25_delta_1d</dt><dd>change vs previous day</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">marts.country_daily</span><span class="desc">Country summaries and rankings</span></div>
+      <dl>
+        <dt class="pk">country_code</dt><dd></dd>
+        <dt class="pk">date_utc</dt><dd></dd>
+        <dt>n_cities</dt><dd>int</dd>
+        <dt>pm25_pop_weighted</dt><dd>population-weighted mean</dd>
+        <dt>worst_city_key</dt><dd>→ dim_city</dd>
+        <dt>aqi_max</dt><dd>smallint</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h3>ml</h3>
+  <div class="schema-grid">
+    <div class="schema">
+      <div class="sh"><span class="name">ml.features_pm25</span><span class="desc">One row per city per as-of time</span></div>
+      <dl>
+        <dt class="pk">city_key</dt><dd></dd>
+        <dt class="pk">as_of_utc</dt><dd>features use data ≤ this time only</dd>
+        <dt>pm25_lag_1 … lag_7</dt><dd>previous readings</dd>
+        <dt>pm25_roll_mean_3 / 7, roll_std_7</dt><dd>rolling stats</dd>
+        <dt>weather_*</dt><dd>observed weather at as_of</dd>
+        <dt>wind_sin, wind_cos</dt><dd>wind direction encoded</dd>
+        <dt>dow, month_sin, month_cos</dt><dd>calendar</dd>
+        <dt>lat, lon, continent, log_pop</dt><dd>location</dd>
+        <dt>target_pm25</dt><dd>next reading about 24h later. Null for the latest row.</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">ml.forecasts</span><span class="desc">What the API serves</span></div>
+      <dl>
+        <dt class="pk">city_key</dt><dd></dd>
+        <dt class="pk">issued_at_utc</dt><dd></dd>
+        <dt class="pk">horizon_h</dt><dd>24 in v1, later 48 and 72</dd>
+        <dt>target_time_utc</dt><dd>issued_at + horizon</dd>
+        <dt>pm25_pred</dt><dd>median</dd>
+        <dt>pm25_p10, pm25_p90</dt><dd>prediction interval</dd>
+        <dt>aqi_pred</dt><dd>derived from the PM2.5 breakpoints</dd>
+        <dt>model_version</dt><dd>MLflow registry version</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">ml.model_runs</span><span class="desc">One row per training run</span></div>
+      <dl>
+        <dt class="pk">model_version</dt><dd></dd>
+        <dt>mlflow_run_id</dt><dd></dd>
+        <dt>trained_at</dt><dd></dd>
+        <dt>train_start, train_end</dt><dd>date range</dd>
+        <dt>mae, rmse, aqi_acc, aqi_macro_f1</dt><dd>backtest metrics</dd>
+        <dt>baseline_mae</dt><dd>persistence baseline</dd>
+        <dt>interval_coverage</dt><dd>share of actuals inside p10–p90</dd>
+        <dt>alias</dt><dd>champion | challenger | archived</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">ml.forecast_accuracy</span><span class="desc">Forecast compared with what actually happened</span></div>
+      <dl>
+        <dt class="pk">city_key</dt><dd></dd>
+        <dt class="pk">target_time_utc</dt><dd></dd>
+        <dt>pm25_pred, pm25_actual</dt><dd></dd>
+        <dt>abs_error</dt><dd></dd>
+        <dt>aqi_pred, aqi_actual</dt><dd></dd>
+        <dt>in_interval</dt><dd>bool</dd>
+        <dt>model_version</dt><dd></dd>
+      </dl>
+    </div>
+  </div>
+
+  <h3>ops and app</h3>
+  <div class="schema-grid">
+    <div class="schema">
+      <div class="sh"><span class="name">ops.pipeline_runs</span><span class="desc">Written by a Dagster run-status sensor</span></div>
+      <dl>
+        <dt class="pk">run_id</dt><dd>Dagster run ID</dd>
+        <dt>job_name</dt><dd>daily_ingest, weekly_retrain, …</dd>
+        <dt>partition_key</dt><dd>e.g. 2026-10-17</dd>
+        <dt>status</dt><dd>queued | started | success | failure | canceled</dd>
+        <dt>started_at, finished_at</dt><dd></dd>
+        <dt>duration_s</dt><dd></dd>
+        <dt>trigger</dt><dd>schedule | sensor | manual</dd>
+        <dt>error_message</dt><dd>first failing step</dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">ops.asset_materializations</span><span class="desc">One row per asset per run</span></div>
+      <dl>
+        <dt class="pk">run_id</dt><dd></dd>
+        <dt class="pk">asset_key</dt><dd>e.g. core/fct_observation</dd>
+        <dt>partition_key</dt><dd></dd>
+        <dt>rows_written</dt><dd>from asset metadata</dd>
+        <dt>duration_s</dt><dd></dd>
+        <dt>materialized_at</dt><dd></dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">ops.check_results</span><span class="desc">Dagster asset checks and dbt tests</span></div>
+      <dl>
+        <dt class="pk">run_id</dt><dd></dd>
+        <dt class="pk">asset_key</dt><dd></dd>
+        <dt class="pk">check_name</dt><dd>e.g. pm25_in_range</dd>
+        <dt>severity</dt><dd>warn | error</dd>
+        <dt>passed</dt><dd>bool</dd>
+        <dt>failed_rows</dt><dd>int</dd>
+        <dt>details</dt><dd>jsonb</dd>
+        <dt>checked_at</dt><dd></dd>
+      </dl>
+    </div>
+    <div class="schema">
+      <div class="sh"><span class="name">app.devices / app.alert_subscriptions</span><span class="desc">For iOS push alerts</span></div>
+      <dl>
+        <dt class="pk">device_id</dt><dd>uuid issued by the API</dd>
+        <dt>apns_token</dt><dd>text</dd>
+        <dt>created_at, last_seen_at</dt><dd></dd>
+        <dt>city_key</dt><dd>(subscription) → dim_city</dd>
+        <dt>aqi_threshold</dt><dd>alert when forecast ≥ this value</dd>
+        <dt>last_notified_at</dt><dd>at most one alert per city per day</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="dagster">
+  <div class="sec-head"><span class="sec-num">05</span><h2>Dagster assets</h2></div>
+  <p>Everything is an asset with a daily partition, so a failed or late day can be rerun on its own. The dbt models are loaded as assets with <code>dagster-dbt</code>, which means dbt tests show up as asset checks without extra code.</p>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  S1([kaggle_update_sensor]) --> A1
+  A1[raw_kaggle_files] --> A2[raw_weather_air_snapshots]
+  A0[raw_openweather_files<br/>phase 2] -.-> A2
+  A2 --> B1[stg_observations]
+  B1 --> B2[dim_city]
+  B1 --> B3[fct_observation]
+  B2 --> B3
+  B3 --> C1[city_daily]
+  C1 --> C2[country_daily]
+  B3 --> M1[features_pm25]
+  M1 --> M2[pm25_model]
+  M1 --> M3[pm25_forecasts]
+  M2 --> M3
+  M3 --> M4[forecast_accuracy]
+  B3 --> M4
+  M3 --> N1[alert_notifications]
+</pre>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Asset</th><th>Group</th><th>Built by</th><th>Partition / cadence</th><th>Checks</th></tr></thead>
+    <tbody>
+      <tr><td><code>raw_kaggle_files</code></td><td>ingest</td><td>Python + Kaggle API</td><td>daily, sensor-triggered</td><td>file present, schema matches the expected columns</td></tr>
+      <tr><td><code>raw_openweather_files</code></td><td>ingest</td><td>Python + httpx</td><td>hourly (phase 2)</td><td>share of successful requests above 98%</td></tr>
+      <tr><td><code>raw_weather_air_snapshots</code></td><td>ingest</td><td>Python → Postgres COPY</td><td>daily</td><td>row count within ±20% of the 7-day average</td></tr>
+      <tr><td><code>stg_observations</code></td><td>transform</td><td>dbt</td><td>daily</td><td>unique (city_key, observed_at_utc), not-null keys</td></tr>
+      <tr><td><code>dim_city</code></td><td>transform</td><td>dbt</td><td>daily</td><td>lat in −90..90, lon in −180..180, country_code length 2</td></tr>
+      <tr><td><code>fct_observation</code></td><td>transform</td><td>dbt</td><td>daily</td><td>aqi in 1..5, pm2_5 in 0..1000, at least 95% of active cities present, freshness under 26h</td></tr>
+      <tr><td><code>city_daily</code>, <code>country_daily</code></td><td>marts</td><td>dbt</td><td>daily</td><td>row count matches the active city and country counts</td></tr>
+      <tr><td><code>features_pm25</code></td><td>ml</td><td>Python (pandas or polars)</td><td>daily</td><td>no feature has a timestamp after <code>as_of_utc</code>, null share under 5%</td></tr>
+      <tr><td><code>pm25_model</code></td><td>ml</td><td>LightGBM + MLflow</td><td>weekly (Sun 03:00 UTC)</td><td>challenger beats the persistence baseline</td></tr>
+      <tr><td><code>pm25_forecasts</code></td><td>ml</td><td>Python, champion model</td><td>daily, after features</td><td>one forecast per active city, p10 ≤ pred ≤ p90</td></tr>
+      <tr><td><code>forecast_accuracy</code></td><td>ml</td><td>SQL</td><td>daily</td><td>7-day MAE has not risen more than 30% over the previous week (warning)</td></tr>
+      <tr><td><code>alert_notifications</code></td><td>app</td><td>Python → APNs</td><td>daily, after forecasts</td><td>sends logged, at most one per device per city per day</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Jobs, schedules and sensors</h3>
+  <ul>
+    <li><b>daily_ingest</b> (all ingest, transform and marts assets). Started by <code>kaggle_update_sensor</code>. A fallback schedule at 06:00 UTC catches days when the sensor misses the update.</li>
+    <li><b>daily_ml</b> (features → forecasts → accuracy → alerts). Started by an asset sensor when <code>fct_observation</code> finishes.</li>
+    <li><b>weekly_retrain</b> (<code>pm25_model</code>). Cron on Sundays. Promotes the new model only if the promotion rule in section 06 passes.</li>
+    <li><b>ops_recorder</b>. A <code>run_status_sensor</code> plus an asset-check hook that write to <code>ops.*</code> whenever a run starts, succeeds or fails. This is what the dashboard reads.</li>
+    <li><b>Freshness.</b> A freshness policy on <code>fct_observation</code> and <code>pm25_forecasts</code> (26 hours). A late day shows up as stale in Dagster and on the dashboard.</li>
+  </ul>
+  <h3>Resources</h3>
+  <p><code>PostgresResource</code>, <code>KaggleResource</code>, <code>OpenWeatherResource</code>, <code>DbtCliResource</code>, <code>MlflowResource</code> and <code>ApnsResource</code>. All of them are configured from environment variables, so local and deployed runs use the same code.</p>
+</section>
+
+<section id="ml">
+  <div class="sec-head"><span class="sec-num">06</span><h2>ML forecasting</h2></div>
+  <div class="callout warn"><strong>Avoid target leakage</strong><p>AQI is calculated from the pollutant concentrations. A model that predicts AQI from same-time <code>pm2_5</code>, <code>pm10</code> or <code>o3</code> will score close to 100% and learn nothing. The dataset's <code>target_*</code> columns and every same-time pollutant are dropped from the features. The model predicts the <em>next</em> reading only from information available now.</p></div>
+  <h3>Problem</h3>
+  <ul>
+    <li><b>Target:</b> PM2.5 at the city's next reading about 24 hours ahead (<code>horizon_h = 24</code>). In phase 1 there is one snapshot per day, so this is "the next snapshot", not a daily average. Once hourly collection runs, it becomes the daily mean for D+1, then D+2 and D+3.</li>
+    <li><b>Outputs:</b> median PM2.5, a p10–p90 interval, and an AQI class derived from the PM2.5 breakpoints.</li>
+  </ul>
+  <h3>Features</h3>
+  <ul>
+    <li>PM2.5 history: lags 1–7, rolling mean over 3 and 7 readings, rolling standard deviation over 7.</li>
+    <li>Weather observed at <code>as_of</code>: temperature, humidity, pressure, wind speed, wind direction as sin and cos, gusts, clouds, rain, snow. Low wind and high pressure tend to trap pollution.</li>
+    <li>Calendar: day of week, weekend flag, month as sin and cos.</li>
+    <li>Location: lat, lon, continent, log population, and <code>city_key</code> as a LightGBM categorical feature.</li>
+    <li>Phase 2: OpenWeather's weather <em>forecast</em> for the target time. Tomorrow's wind matters more than today's.</li>
+  </ul>
+  <h3>Models</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Model</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td>Persistence (tomorrow equals today)</td><td>Baseline 1. Hard to beat for air quality, which makes it the bar every model must clear.</td></tr>
+      <tr><td>7-day city mean</td><td>Baseline 2</td></tr>
+      <tr><td>LightGBM on <code>log1p(pm25)</code></td><td>Main model (median)</td></tr>
+      <tr><td>LightGBM quantile, α = 0.1 and 0.9</td><td>Prediction interval for the apps' "likely range"</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Validation</h3>
+  <ul>
+    <li>Rolling-origin backtest: an expanding training window with 4 test folds of 14 days each. Never split randomly.</li>
+    <li>Metrics: MAE and RMSE on PM2.5, AQI class accuracy and macro F1, and interval coverage (target about 80%).</li>
+    <li>Report results by continent and by AQI band. A model that does well on clean cities but badly on polluted ones is not useful to the people who need the forecast most.</li>
+  </ul>
+  <h3>Tracking and promotion</h3>
+  <ul>
+    <li>MLflow with a Postgres backend stores parameters, metrics, feature importance and the model file. The registry aliases are <code>champion</code> and <code>challenger</code>.</li>
+    <li>Promotion rule: the challenger's MAE on the last fold is at most 98% of the champion's, it beats persistence, and interval coverage is between 70% and 90%. Otherwise the champion stays and the run is logged as rejected.</li>
+    <li>Monitoring: <code>forecast_accuracy</code> compares each forecast with what actually happened. PSI drift on the top features and the missing-data rate are both shown on the web dashboard's Model page.</li>
+  </ul>
+</section>
+
+<section id="api">
+  <div class="sec-head"><span class="sec-num">07</span><h2>API endpoints</h2></div>
+  <p>FastAPI, versioned under <code>/v1</code>. Read endpoints are public and rate limited. Ops actions need an admin API key. Device endpoints use a per-device token returned at registration. The OpenAPI spec generates a typed TypeScript client for the web app and Swift models for iOS.</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>Path</th><th>Returns</th><th>Used by</th></tr></thead>
+    <tbody>
+      <tr><td colspan="4"><b>Cities and air quality</b></td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/cities?q=&amp;country=&amp;limit=</code></td><td>Search and list cities</td><td>both</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/cities/nearest?lat=&amp;lon=</code></td><td>Closest tracked city with its distance</td><td>iOS</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/cities/{city_key}</code></td><td>City details</td><td>both</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/cities/{city_key}/current</code></td><td>Latest observation, AQI and data age</td><td>both</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/cities/{city_key}/history?from=&amp;to=</code></td><td>Daily series from <code>city_daily</code></td><td>both</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/cities/{city_key}/forecast</code></td><td>Latest forecasts with interval and AQI</td><td>both</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/map?date=&amp;metric=pm2_5</code></td><td>Compact list of points for the world map</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/rankings?metric=&amp;order=&amp;date=&amp;limit=</code></td><td>Cleanest or most polluted cities</td><td>both</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/countries/{code}/summary?date=</code></td><td>Country summary from <code>country_daily</code></td><td>web</td></tr>
+      <tr><td colspan="4"><b>Pipeline operations</b></td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ops/summary</code></td><td>Last run status, freshness, rows today, failed checks</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ops/runs?job=&amp;status=&amp;limit=</code></td><td>Run history</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ops/runs/{run_id}</code></td><td>Steps, assets, row counts, checks, link to Dagster</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ops/assets</code></td><td>Each asset's last update and stale flag</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ops/checks?since=&amp;status=failed</code></td><td>Check results over time</td><td>web</td></tr>
+      <tr><td><span class="pill post">POST</span></td><td><code>/v1/ops/jobs/{job_name}/runs</code></td><td>Starts a run through Dagster's GraphQL API (admin key)</td><td>web</td></tr>
+      <tr><td colspan="4"><b>Model</b></td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ml/models</code></td><td>Model versions with metrics and alias</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ml/accuracy?from=&amp;to=&amp;group_by=continent</code></td><td>Realized error over time</td><td>web</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/ml/drift</code></td><td>PSI for each monitored feature</td><td>web</td></tr>
+      <tr><td colspan="4"><b>Devices and alerts</b></td></tr>
+      <tr><td><span class="pill post">POST</span></td><td><code>/v1/devices</code></td><td>Registers an APNs token and returns a device ID and token</td><td>iOS</td></tr>
+      <tr><td><span class="pill put">PUT</span></td><td><code>/v1/devices/{id}/subscriptions</code></td><td>Replaces the device's saved cities and thresholds</td><td>iOS</td></tr>
+      <tr><td><span class="pill del">DELETE</span></td><td><code>/v1/devices/{id}</code></td><td>Removes the device and its subscriptions</td><td>iOS</td></tr>
+      <tr><td><span class="pill get">GET</span></td><td><code>/v1/health</code></td><td>API and database status</td><td>infra</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Example: <code>GET /v1/cities/{city_key}/forecast</code></h3>
+<pre class="block">{
+  "city": { "city_key": "a41f…", "name": "Jakarta", "country_code": "ID" },
+  "issued_at": "2026-10-17T03:10:00Z",
+  "model_version": "pm25-lgbm-v7",
+  "data_age_hours": 14.2,
+  "forecasts": [
+    {
+      "horizon_h": 24,
+      "target_time": "2026-10-18T03:00:00Z",
+      "pm25": { "pred": 41.8, "p10": 29.5, "p90": 58.0 },
+      "aqi": { "level": 3, "label": "Moderate" }
+    }
+  ],
+  "attribution": "Weather and air pollution data: OpenWeather, via Kaggle (CC BY 4.0)"
+}</pre>
+  <p style="font-size:14.5px;color:var(--muted)">Example values for illustration only.</p>
+</section>
+
+<section id="apps">
+  <div class="sec-head"><span class="sec-num">08</span><h2>The two apps</h2></div>
+  <p>Each app is its own UI/UX case study for a different user. The web dashboard is dense and built for diagnosis. The iOS app is calm and answers one question: is the air OK today and tomorrow?</p>
+  <div class="apps">
+    <div class="app">
+      <h3>Web ops dashboard <span class="pill">engineers &amp; analysts</span></h3>
+      <p class="stack">Next.js (App Router) · TypeScript · TanStack Query · shadcn/ui · ECharts · MapLibre GL</p>
+      <div class="feat">
+        <div><b>Overview</b><span class="pill mvp">MVP</span><p>Status tiles for the last run, data freshness, rows ingested today, failed checks and 7-day model MAE. Every tile links to its detail page.</p></div>
+        <div><b>Pipeline runs</b><span class="pill mvp">MVP</span><p>Timeline of runs coloured by status, with filters by job and status. Run detail shows each asset's duration and rows, the check results, and an "Open in Dagster" link.</p></div>
+        <div><b>Data quality</b><span class="pill mvp">MVP</span><p>Grid of checks by day that makes repeat failures easy to spot. Clicking a failure shows sample failing rows.</p></div>
+        <div><b>Asset freshness</b><span class="pill mvp">MVP</span><p>Every asset with its last update, expected interval and a stale badge.</p></div>
+        <div><b>World map</b><span class="pill mvp">MVP</span><p>One bubble per city coloured by AQI, with a date scrubber. Clicking a bubble opens the city panel.</p></div>
+        <div><b>City explorer</b><span class="pill mvp">MVP</span><p>PM2.5 history with forecast and interval band, weather alongside, and a pollutant breakdown.</p></div>
+        <div><b>Model performance</b><span class="pill later">Later</span><p>Forecast vs actual, error by continent and AQI band, model version history with promotion decisions, drift chart.</p></div>
+        <div><b>Compare and rankings</b><span class="pill later">Later</span><p>Compare up to four cities. Cleanest and most polluted lists by day.</p></div>
+        <div><b>Manual run</b><span class="pill later">Later</span><p>Rerun a job for a chosen date, behind the admin key, with a confirmation step on the page.</p></div>
+      </div>
+    </div>
+    <div class="app">
+      <h3>iOS app <span class="pill">everyday users</span></h3>
+      <p class="stack">SwiftUI · Swift Charts · SwiftData cache · WidgetKit · CoreLocation · APNs</p>
+      <div class="feat">
+        <div><b>Today</b><span class="pill mvp">MVP</span><p>Nearest or chosen city: AQI level shown with a colour, a label and a number (never colour alone), the PM2.5 value, a one-line health tip, and "Updated 14 h ago".</p></div>
+        <div><b>Tomorrow</b><span class="pill mvp">MVP</span><p>Forecast AQI with a "likely range" bar taken from p10–p90, and a plain-language sentence like "Similar to today".</p></div>
+        <div><b>Search and saved cities</b><span class="pill mvp">MVP</span><p>Search tracked cities and save up to 10, each shown with a small AQI chip. Location permission is optional, with search as the fallback.</p></div>
+        <div><b>City detail</b><span class="pill mvp">MVP</span><p>30-day PM2.5 chart, pollutant breakdown with short explanations, current weather.</p></div>
+        <div><b>Onboarding</b><span class="pill mvp">MVP</span><p>Three screens: what AQI means, why location is asked for, and setting up alerts. Each can be skipped.</p></div>
+        <div><b>Alerts</b><span class="pill later">Later</span><p>Push notification when tomorrow's forecast for a saved city reaches your threshold. At most one per city per day.</p></div>
+        <div><b>Widgets</b><span class="pill later">Later</span><p>Small widget with AQI and city. Medium widget adds tomorrow's forecast. Lock-screen widget.</p></div>
+        <div><b>Health guidance</b><span class="pill later">Later</span><p>Tips for each AQI level for sensitive groups (asthma, children, outdoor exercise), written plainly.</p></div>
+        <div><b>Offline</b><span class="pill later">Later</span><p>Last data is cached and shown with its age, plus an offline banner.</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="callout"><strong>Design the honest version</strong><p>In phase 1 each city has one reading per day, and some cities will be missing on some days. Both apps should always show how old the data is and say clearly when a city has no recent reading, rather than showing an old number as if it were current. Both apps must also show the OpenWeather and dataset attribution (CC BY 4.0).</p></div>
+</section>
+
+<section id="repo">
+  <div class="sec-head"><span class="sec-num">09</span><h2>Repo and infrastructure</h2></div>
+  <p>One monorepo, with Docker Compose for everything except the two front ends.</p>
+<pre class="block">haze/
+├── pipeline/            # Dagster code location
+│   ├── assets/          # ingest.py, ml.py, alerts.py
+│   ├── checks/          # asset checks
+│   ├── sensors/         # kaggle_update, ops_recorder, freshness
+│   ├── resources/       # postgres, kaggle, openweather, mlflow, apns
+│   └── definitions.py
+├── dbt/                 # dbt-postgres project
+│   └── models/{staging,core,marts}/
+├── ml/                  # features.py, train.py, backtest.py, predict.py
+├── api/                 # FastAPI app, routers/, schemas/, openapi.json
+├── web/                 # Next.js dashboard
+├── ios/                 # Xcode project (Haze.xcodeproj)
+├── infra/
+│   ├── docker-compose.yml   # postgres, dagster-webserver, dagster-daemon, mlflow, api
+│   └── .env.example
+├── data/raw/            # gitignored
+└── docs/                # this plan, ADRs, design files</pre>
+  <div class="tbl"><table>
+    <thead><tr><th>Concern</th><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Warehouse</td><td>Postgres 16</td><td>Dagster writes while the API reads at the same time. DuckDB handles that poorly.</td></tr>
+      <tr><td>Dagster storage</td><td>Same Postgres, separate database</td><td>One container, fewer moving parts</td></tr>
+      <tr><td>Python tooling</td><td>uv, ruff, pytest</td><td>Fast, one lockfile per package</td></tr>
+      <tr><td>CI</td><td>GitHub Actions</td><td>Lint, unit tests, <code>dbt build</code> on a sample, OpenAPI client generation</td></tr>
+      <tr><td>Deploy</td><td>One small VPS running Compose; web app on Vercel</td><td>Cheap and simple. The iOS app goes to TestFlight.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="roadmap">
+  <div class="sec-head"><span class="sec-num">10</span><h2>Roadmap</h2></div>
+  <p>About 13 weeks part-time. UI/UX design for each app can start while the backend phases before it are still being built.</p>
+  <div class="phases">
+    <div class="phase"><span class="when">Week 1</span><h3>Phase 0: Setup</h3><p>Repo, Compose stack, Kaggle token, first manual download, and a notebook to profile the data: history length, nulls, units, cities per day.</p><p class="done">Done when: the data profile is written up and the open questions in section 11 are answered.</p></div>
+    <div class="phase"><span class="when">Weeks 2–3</span><h3>Phase 1: Ingestion and warehouse</h3><p>Raw assets, the Kaggle sensor, dbt staging, core and marts, and asset checks.</p><p class="done">Done when: a new Kaggle version lands in the marts automatically, and a broken file fails a check.</p></div>
+    <div class="phase"><span class="when">Week 4</span><h3>Phase 2: Ops metadata and API</h3><p>The ops recorder sensor, <code>ops.*</code> tables, FastAPI read endpoints, the OpenAPI spec and generated clients.</p><p class="done">Done when: <code>/v1/ops/summary</code> and <code>/v1/cities/*</code> return live data.</p></div>
+    <div class="phase"><span class="when">Weeks 5–6</span><h3>Phase 3: Forecast model</h3><p>Feature asset, baselines, LightGBM with quantile models, backtests, MLflow, the promotion rule, and the daily forecast and accuracy assets.</p><p class="done">Done when: the champion model beats persistence in the backtest and forecasts are served by the API.</p></div>
+    <div class="phase"><span class="when">Weeks 5–9</span><h3>Phase 4: Web dashboard</h3><p>Research and wireframes (weeks 5–6), then a hi-fi design and a small design system, then the MVP pages.</p><p class="done">Done when: someone else can diagnose a failed run using only the dashboard.</p></div>
+    <div class="phase"><span class="when">Weeks 8–12</span><h3>Phase 5: iOS app</h3><p>User interviews (3–5 people), flows, hi-fi design, then the SwiftUI MVP, then alerts and widgets.</p><p class="done">Done when: the app is on TestFlight with the MVP features, and alerts fire from the daily forecast.</p></div>
+    <div class="phase"><span class="when">Week 13</span><h3>Phase 6: Hardening and write-up</h3><p>Hourly OpenWeather collection (if the call limits allow), deploy, README, architecture diagrams, and a case study for each app.</p><p class="done">Done when: the public demo links and case studies are live.</p></div>
+  </div>
+</section>
+
+<section id="risks">
+  <div class="sec-head"><span class="sec-num">11</span><h2>Risks and open questions</h2></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Item</th><th>Impact</th><th>Plan</th></tr></thead>
+    <tbody>
+      <tr><td>How much history does the dataset have?</td><td>A few months is too short for seasonal patterns</td><td>Profile it in phase 0. Backfill from OpenWeather's air pollution history endpoint if needed.</td></tr>
+      <tr><td>Does each Kaggle version hold the full history or only the latest day?</td><td>Changes the load logic</td><td>Upsert on the natural key, which works either way. Confirm in phase 0.</td></tr>
+      <tr><td>One reading per city per day</td><td>Noisy target. A single snapshot can catch a spike.</td><td>Show it honestly in the apps. Move to hourly collection in phase 6.</td></tr>
+      <tr><td>Temperature units</td><td>Wrong values in the apps and in features</td><td>Range check in staging (−90 to 60 °C)</td></tr>
+      <tr><td>OpenWeather call limits</td><td>Hourly collection may not fit the free tier</td><td>Calculate calls per day before enabling. Limit to a subset of cities if needed.</td></tr>
+      <tr><td>Missing cities on some days</td><td>Gaps in charts and forecasts</td><td>Coverage check at 95%. Forecasts are skipped for cities with fewer than 3 of the last 7 readings.</td></tr>
+      <tr><td>Licence and attribution</td><td>CC BY 4.0 requires credit</td><td>Attribution in the API response, the web footer and the iOS About screen</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Haze v0.1 draft. Data: OpenWeather and GeoNames via the Kaggle "Global Weather &amp; Air Pollution Dataset" by xjoannax88, CC BY 4.0. Example values in this document are illustrative.</footer>
+</main>
+</div>

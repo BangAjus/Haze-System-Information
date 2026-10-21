@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: dim_city
+    description: One row per tracked city.
+    columns:
+      - name: geonameid
+        data_tests: [unique, not_null]
+      - name: country_code
+        data_tests: [not_null]
+      - name: lat
+        data_tests:
+          - accepted_range: { arguments: { min_value: -90, max_value: 90 } }
+      - name: lon
+        data_tests:
+          - accepted_range: { arguments: { min_value: -180, max_value: 180 } }
+
+  - name: fct_observation
+    description: One row per city per observation. The single source of truth for readings.
+    data_tests:
+      - unique_observation
+      - active_city_coverage:
+          arguments:
+            min_share: 0.95
+    columns:
+      - name: geonameid
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_city')
+                field: geonameid
+      - name: observed_at_utc
+        data_tests: [not_null]
+      - name: aqi
+        data_tests:
+          - accepted_range: { arguments: { min_value: 1, max_value: 5 } }
+      - name: pm2_5
+        data_tests:
+          - not_null
+          - accepted_range: { arguments: { min_value: 0, max_value: 1000 } }

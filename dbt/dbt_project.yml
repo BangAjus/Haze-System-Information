@@ -1,0 +1,24 @@
+name: haze
+version: "0.1.0"
+config-version: 2
+profile: haze
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: target
+
+models:
+  haze:
+    staging:
+      +schema: staging
+      +materialized: view
+    core:
+      +schema: core
+      +materialized: table
+    marts:
+      +schema: marts
+      +materialized: table
+    ml:
+      +schema: ml
+      +materialized: table

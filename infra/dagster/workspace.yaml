@@ -1,0 +1,4 @@
+load_from:
+  - python_module:
+      module_name: pipeline.definitions
+      working_directory: /opt/haze

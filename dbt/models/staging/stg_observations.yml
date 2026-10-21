@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_observations
+    description: Typed and deduplicated observations. One row per city per observation time.
+    columns:
+      - name: geonameid
+        description: GeoNames city ID. Stable city key, used instead of a name hash.
+        data_tests: [not_null]
+      - name: observed_at_utc
+        data_tests: [not_null]
+      - name: continent
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["AF", "AN", "AS", "EU", "NA", "OC", "SA"]
+      - name: temp_c
+        data_tests:
+          - accepted_range: { arguments: { min_value: -90, max_value: 60 } }

@@ -1,0 +1,14 @@
+.venv
+.env
+.git
+.history
+data
+dbt/target
+dbt/logs
+dbt/.user.yml
+**/__pycache__
+*.egg-info
+.pytest_cache
+.ruff_cache
+web
+ios

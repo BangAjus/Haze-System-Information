@@ -1,0 +1,64 @@
+[project]
+name = "haze"
+version = "0.1.0"
+description = "City air-quality pipeline, PM2.5 forecast model and API"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "polars>=1.20",
+    "pyarrow>=17",
+    "pydantic-settings>=2.4",
+    # 2.1 makes psycopg 3 the default Postgres driver, which breaks dagster-postgres's
+    # NOTIFY queries ("syntax error at or near $1"). Lift once Dagster supports it.
+    "sqlalchemy>=2.0,<2.1",
+    "psycopg[binary]>=3.2",
+    "numpy>=1.26",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+pipeline = [
+    "dagster>=1.10",
+    "dagster-webserver>=1.10",
+    "dagster-postgres>=0.26",
+    "dagster-dbt>=0.26",
+    "dbt-core>=1.9",
+    "dbt-postgres>=1.9",
+    "kaggle>=1.7",
+]
+ml = [
+    "scikit-learn>=1.5",
+    "pandas>=2.2",
+    "mlflow-skinny>=3.0",
+]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+dev = [
+    "haze[pipeline,ml,api]",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["shared*", "pipeline*", "ml*", "api*"]
+
+[tool.dagster]
+module_name = "pipeline.definitions"
+code_location_name = "haze"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".history"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

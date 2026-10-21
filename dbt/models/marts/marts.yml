@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: city_daily
+    description: One row per city per UTC day.
+    columns:
+      - name: geonameid
+        data_tests: [not_null]
+      - name: date_utc
+        data_tests: [not_null]
+      - name: n_obs
+        data_tests:
+          - accepted_range: { arguments: { min_value: 1, max_value: 24 } }
+
+  - name: country_daily
+    description: One row per country per UTC day.
+    columns:
+      - name: country_code
+        data_tests: [not_null]

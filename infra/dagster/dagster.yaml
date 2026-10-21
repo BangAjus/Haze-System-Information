@@ -1,0 +1,16 @@
+# Dagster instance config: run, event and schedule storage in its own Postgres database.
+storage:
+  postgres:
+    postgres_db:
+      hostname: { env: POSTGRES_HOST }
+      username: { env: POSTGRES_USER }
+      password: { env: POSTGRES_PASSWORD }
+      db_name: dagster
+      port: 5432
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+
+telemetry:
+  enabled: false
