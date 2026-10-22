@@ -1,4 +1,4 @@
-.PHONY: setup up down db logs dev api dbt test lint
+.PHONY: setup up down db logs dev api dbt dbt-freshness test lint
 
 setup:            ## Create .venv and install everything
 	python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
@@ -23,6 +23,9 @@ api:              ## Run the API locally with reload (docs on :8000/docs)
 
 dbt:              ## Run dbt build directly
 	set -a && . ./.env && set +a && cd dbt && ../.venv/bin/dbt build --profiles-dir .
+
+dbt-freshness:    ## Check how old the newest observation in the raw table is
+	set -a && . ./.env && set +a && cd dbt && ../.venv/bin/dbt source freshness --profiles-dir .
 
 test:
 	.venv/bin/pytest -q

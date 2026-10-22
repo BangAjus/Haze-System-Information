@@ -9,7 +9,9 @@ sources:
         description: >
           The Kaggle file as-is (full history, one row per city per daily collection),
           plus _source, _file, _ingested_at and _dagster_run_id.
-        loaded_at_field: _ingested_at
+        # Freshness of the data itself (newest observation), not of our load time.
+        # Run with `make dbt-freshness`. Dagster checks the same thing on every ingest.
+        loaded_at_field: "to_timestamp(weather_time_unix)"
         freshness:
-          warn_after: { count: 26, period: hour }
-          error_after: { count: 50, period: hour }
+          warn_after: { count: 36, period: hour }
+          error_after: { count: 60, period: hour }

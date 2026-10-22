@@ -5,13 +5,14 @@ Each Kaggle version holds the full history (one row per city per daily collectio
 The downloaded file is kept on disk per version so any load can be replayed.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from dagster import (
     AssetCheckResult,
     AssetCheckSeverity,
     AssetExecutionContext,
+    FreshnessPolicy,
     MaterializeResult,
     asset,
     asset_check,
@@ -69,7 +70,25 @@ def raw_kaggle_file(context: AssetExecutionContext, kaggle: KaggleResource) -> M
     )
 
 
-@asset(group_name="ingest", compute_kind="postgres", deps=[raw_kaggle_file], key_prefix="raw")
+# "Has the pipeline loaded anything lately?" Evaluated by the daemon even when no run happens,
+# so a dead sensor or a dataset that stopped updating still shows up as stale.
+DAILY_FRESHNESS = FreshnessPolicy.time_window(
+    warn_window=timedelta(hours=26), fail_window=timedelta(hours=50)
+)
+
+# "Is the data itself recent?" The newest observation's age when a load finishes. Catches
+# the author republishing old data, which the policy above can't see.
+OBSERVATION_WARN_AGE = timedelta(hours=36)
+OBSERVATION_ERROR_AGE = timedelta(hours=60)
+
+
+@asset(
+    group_name="ingest",
+    compute_kind="postgres",
+    deps=[raw_kaggle_file],
+    key_prefix="raw",
+    freshness_policy=DAILY_FRESHNESS,
+)
 def weather_air_snapshots(context: AssetExecutionContext) -> MaterializeResult:
     """The Kaggle file loaded as-is into raw.weather_air_snapshots, plus lineage columns."""
     latest = sorted(get_settings().raw_dir.glob("source=kaggle/ingest_date=*/*.parquet"))[-1]
@@ -105,4 +124,20 @@ def raw_row_count_stable() -> AssetCheckResult:
         passed=n_rows > 0 and n_rows == n_keys,
         severity=AssetCheckSeverity.ERROR,
         metadata={"n_rows": n_rows, "duplicate_keys": n_rows - n_keys},
+    )
+
+
+@asset_check(asset=weather_air_snapshots)
+def observations_are_recent() -> AssetCheckResult:
+    """Warns at 36h and fails at 60h since the newest observation in the file."""
+    newest = read_sql("select max(weather_time_unix) as t from raw.weather_air_snapshots").item()
+    age = datetime.now(UTC) - datetime.fromtimestamp(newest, UTC)
+    severity = AssetCheckSeverity.ERROR if age > OBSERVATION_ERROR_AGE else AssetCheckSeverity.WARN
+    return AssetCheckResult(
+        passed=age <= OBSERVATION_WARN_AGE,
+        severity=severity,
+        metadata={
+            "newest_observation_utc": datetime.fromtimestamp(newest, UTC).isoformat(),
+            "age_hours": round(age.total_seconds() / 3600, 1),
+        },
     )

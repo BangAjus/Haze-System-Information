@@ -67,9 +67,18 @@ off: turn them on in the Dagster UI under Automation, or with `dagster sensor st
 
 | Job | Trigger | Does |
 |---|---|---|
-| `daily_ingest` | `kaggle_update_sensor` (new Kaggle version), fallback 06:00 UTC | Download, load raw, `dbt build` |
+| `daily_ingest` | `kaggle_update_sensor` (new Kaggle version); fallback 06:00 UTC, skipped if an ingest ran in the last 20h | Download, load raw, `dbt build`. Only one runs at a time (queue limit) |
 | `daily_ml` | 06:30 UTC | Features, forecasts, accuracy |
 | `weekly_retrain` | Sunday 03:00 UTC | Backtest every candidate model (`hgb`, `random_forest`, `ridge`), train the best, promote if it beats persistence and the champion by 2% |
+
+## Freshness
+
+- **Pipeline freshness:** `raw/weather_air_snapshots` and `ml/forecasts` have Dagster freshness
+  policies (warn after 26h, fail after 50h without an update). The daemon evaluates them even
+  when nothing runs, so a dead sensor shows up as stale in the UI.
+- **Data freshness:** the `observations_are_recent` check runs on every ingest and warns when
+  the newest observation is over 36h old (error over 60h). The same rule is in dbt:
+  `make dbt-freshness`.
 
 ## Model candidates
 
@@ -80,5 +89,6 @@ nested runs. To add a model, write a `make_<name>(cols)` function and add it to 
 
 ## Status
 
-Phase 0–1 scaffold. Not yet built: device/alert endpoints, `/v1/ops/assets`, manual run
-trigger, hourly OpenWeather collection, web and iOS apps.
+Phases 0–1 done (except hourly OpenWeather collection, which needs an API key and a check of
+the free-tier limits). Phase 3 model in place. Not yet built: check results and asset row
+counts in `ops.*`, `/v1/ops/assets`, manual run trigger, device/alert endpoints, web and iOS apps.

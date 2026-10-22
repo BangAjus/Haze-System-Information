@@ -11,6 +11,13 @@ storage:
 run_coordinator:
   module: dagster.core.run_coordinator
   class: QueuedRunCoordinator
+  config:
+    # One raw load at a time: a second daily_ingest waits in the queue instead of
+    # truncating the table while the first is still loading it.
+    tag_concurrency_limits:
+      - key: haze/exclusive
+        value: ingest
+        limit: 1
 
 telemetry:
   enabled: false

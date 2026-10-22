@@ -5,7 +5,7 @@ these assets only load inputs, call it and save outputs.
 """
 
 import pickle
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from dagster import (
@@ -13,6 +13,7 @@ from dagster import (
     AssetExecutionContext,
     AssetKey,
     Config,
+    FreshnessPolicy,
     MaterializeResult,
     asset,
     asset_check,
@@ -147,7 +148,16 @@ def pm25_model(context: AssetExecutionContext, config: TrainConfig) -> Materiali
     )
 
 
-@asset(group_name="ml", compute_kind="sklearn", deps=[FEATURES, pm25_model], key_prefix="ml")
+@asset(
+    group_name="ml",
+    compute_kind="sklearn",
+    deps=[FEATURES, pm25_model],
+    key_prefix="ml",
+    # The apps show these; stale forecasts should be visible in Dagster and on the dashboard
+    freshness_policy=FreshnessPolicy.time_window(
+        warn_window=timedelta(hours=26), fail_window=timedelta(hours=50)
+    ),
+)
 def forecasts() -> MaterializeResult:
     """Next-reading PM2.5 forecast for every city, from the champion model."""
     champion = read_sql("select model_version from ml.model_runs where alias = 'champion' limit 1")
