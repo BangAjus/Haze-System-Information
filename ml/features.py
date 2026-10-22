@@ -15,11 +15,20 @@ WEATHER_COLS = [
     "rain_1h_mm",
 ]
 
+PM10_COLS = [
+    "pm10_lag_0",
+    "pm10_lag_1",
+    "pm10_roll_mean_3",
+    "pm10_roll_mean_7",
+    "pm25_pm10_ratio",
+]
+
 FEATURE_COLS = [
     *[f"pm25_lag_{i}" for i in range(8)],
     "pm25_roll_mean_3",
     "pm25_roll_mean_7",
     "pm25_roll_std_7",
+    *PM10_COLS,
     *WEATHER_COLS,
     "wind_sin",
     "wind_cos",

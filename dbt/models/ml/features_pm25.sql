@@ -34,6 +34,14 @@ select
     case when count(*) over w7 = 7 then avg(pm2_5) over w7 end          as pm25_roll_mean_7,
     case when count(*) over w7 = 7 then stddev_samp(pm2_5) over w7 end  as pm25_roll_std_7,
 
+    -- PM10 history (coarse particles: dust, sand, construction)
+    pm10                                             as pm10_lag_0,
+    lag(pm10, 1) over w                              as pm10_lag_1,
+    case when count(*) over w3 = 3 then avg(pm10) over w3 end           as pm10_roll_mean_3,
+    case when count(*) over w7 = 7 then avg(pm10) over w7 end           as pm10_roll_mean_7,
+    -- Share of PM10 that is fine particles. High = combustion/smoke, low = dust
+    pm2_5 / nullif(pm10, 0)                          as pm25_pm10_ratio,
+
     -- Weather at as_of
     temp_c,
     humidity_pct,

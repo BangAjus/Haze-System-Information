@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS ops.check_results (
 -- Model outputs
 CREATE TABLE IF NOT EXISTS ml.model_runs (
     model_version      text PRIMARY KEY,
+    model_type         text,
     mlflow_run_id      text,
     trained_at         timestamptz NOT NULL DEFAULT now(),
     train_start        date,

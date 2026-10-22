@@ -19,7 +19,7 @@ from dagster import (
 
 from pipeline.resources import KaggleResource
 from shared.config import get_settings
-from shared.db import read_sql, write_table
+from shared.db import read_sql, replace_rows
 
 # Columns staging relies on. If the author renames any of them the load fails loudly.
 REQUIRED_COLUMNS = {
@@ -85,7 +85,8 @@ def weather_air_snapshots(context: AssetExecutionContext) -> MaterializeResult:
         pl.lit(datetime.now(UTC)).alias("_ingested_at"),
         pl.lit(context.run_id).alias("_dagster_run_id"),
     )
-    rows = write_table(df, "weather_air_snapshots", schema="raw", if_exists="replace")
+    # Truncate and reload: dropping the table would fail, dbt views depend on it
+    rows = replace_rows(df, "weather_air_snapshots", schema="raw")
     return MaterializeResult(metadata={"rows_written": rows, "source_file": str(latest)})
 
 

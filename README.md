@@ -69,7 +69,14 @@ off: turn them on in the Dagster UI under Automation, or with `dagster sensor st
 |---|---|---|
 | `daily_ingest` | `kaggle_update_sensor` (new Kaggle version), fallback 06:00 UTC | Download, load raw, `dbt build` |
 | `daily_ml` | 06:30 UTC | Features, forecasts, accuracy |
-| `weekly_retrain` | Sunday 03:00 UTC | Backtest, train, promote if it beats persistence |
+| `weekly_retrain` | Sunday 03:00 UTC | Backtest every candidate model (`hgb`, `random_forest`, `ridge`), train the best, promote if it beats persistence and the champion by 2% |
+
+## Model candidates
+
+Candidates live in `ml/train.py` (`CANDIDATES`). Choose which ones compete when launching
+`weekly_retrain` in the Dagster launchpad (`ops: ml__pm25_model: config: candidates`). Each
+training run writes every candidate's backtest to `ml.model_candidates` and to MLflow as
+nested runs. To add a model, write a `make_<name>(cols)` function and add it to `CANDIDATES`.
 
 ## Status
 
