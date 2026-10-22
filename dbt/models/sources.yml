@@ -15,3 +15,13 @@ sources:
         freshness:
           warn_after: { count: 36, period: hour }
           error_after: { count: 60, period: hour }
+
+      - name: openweather_snapshots
+        description: >
+          Hourly collection from the OpenWeather Current Weather and Air Pollution APIs for
+          every active city. Same column names as the Kaggle file, plus air_time_unix.
+          Loaded by the Dagster asset raw/openweather_snapshots.
+        loaded_at_field: "to_timestamp(air_time_unix)"
+        freshness:
+          warn_after: { count: 3, period: hour }
+          error_after: { count: 8, period: hour }

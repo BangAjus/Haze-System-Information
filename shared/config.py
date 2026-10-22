@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     kaggle_dataset: str = "xjoannax88/global-weather-and-air-pollution-dataset"
     kaggle_file: str = "output/openweather_weather_airpollution_top3cities_per_country.parquet"
 
+    openweather_api_key: str = ""
+
     haze_data_dir: Path = Path("./data")
     mlflow_tracking_uri: str = "http://localhost:5001"
     dagster_ui_url: str = "http://localhost:3000"

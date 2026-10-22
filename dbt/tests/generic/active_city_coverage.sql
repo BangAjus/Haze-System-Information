@@ -1,12 +1,13 @@
-{# Fails when the latest collection day has readings for fewer than min_share of active cities. #}
+{#
+  Fails when fewer than min_share of active cities have a reading in the 24 hours before the
+  newest observation. A rolling window rather than the latest calendar day, because with
+  hourly collection a new UTC day starts with only a few hours of data.
+#}
 {% test active_city_coverage(model, min_share=0.95) %}
-with latest_day as (
-    select max(observed_at_utc)::date as d from {{ model }}
-),
-seen as (
+with seen as (
     select count(distinct geonameid) as n
-    from {{ model }}, latest_day
-    where observed_at_utc::date = latest_day.d
+    from {{ model }}
+    where observed_at_utc > (select max(observed_at_utc) - interval '24 hours' from {{ model }})
 ),
 active as (
     select count(*) as n from {{ ref('dim_city') }} where is_active

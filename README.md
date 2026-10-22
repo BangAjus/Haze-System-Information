@@ -68,8 +68,28 @@ off: turn them on in the Dagster UI under Automation, or with `dagster sensor st
 | Job | Trigger | Does |
 |---|---|---|
 | `daily_ingest` | `kaggle_update_sensor` (new Kaggle version); fallback 06:00 UTC, skipped if an ingest ran in the last 20h | Download, load raw, `dbt build`. Only one runs at a time (queue limit) |
+| `hourly_openweather` | Every hour at :15 (on automatically when `OPENWEATHER_API_KEY` is set) | Weather + air pollution for every active city from OpenWeather, then `dbt build` |
 | `daily_ml` | 06:30 UTC | Features, forecasts, accuracy |
 | `weekly_retrain` | Sunday 03:00 UTC | Backtest every candidate model (`hgb`, `random_forest`, `ridge`), train the best, promote if it beats persistence and the champion by 2% |
+
+## Hourly OpenWeather collection
+
+Calls the Current Weather and Air Pollution APIs for every active city once an hour and
+appends to `raw.openweather_snapshots`, using the Kaggle file's column names so dbt unions
+both sources in `staging.stg_observations` (via the `observation_columns` macro).
+
+Free tier budget (checked 2026-10-22): 60 calls/min and 1,000,000 calls/month.
+
+| | Calls |
+|---|---|
+| One run (584 cities × 2 APIs) | 1,168 |
+| Per day (24 runs) | 28,032 |
+| Per 31-day month | ~869,000 (87% of the limit) |
+
+Requests are paced at 50/min (a run takes ~23 minutes), and each run skips itself if it
+would push this month's usage past 950,000 calls. For a quick test, launch
+`hourly_openweather` with `ops: raw__openweather_snapshots: config: max_cities: 10`.
+To halve the usage, change the schedule's cron in `pipeline/jobs.py` to every 2 hours.
 
 ## Freshness
 
@@ -89,6 +109,6 @@ nested runs. To add a model, write a `make_<name>(cols)` function and add it to 
 
 ## Status
 
-Phases 0–1 done (except hourly OpenWeather collection, which needs an API key and a check of
-the free-tier limits). Phase 3 model in place. Not yet built: check results and asset row
+Phases 0–1 done, including hourly OpenWeather collection. Phase 3 model in place (the
+feature table still uses one reading per city per day; hourly features are a next step). Not yet built: check results and asset row
 counts in `ops.*`, `/v1/ops/assets`, manual run trigger, device/alert endpoints, web and iOS apps.

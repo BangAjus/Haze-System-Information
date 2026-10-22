@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from dagster import (
     AssetSelection,
     DagsterRunStatus,
+    DefaultScheduleStatus,
     RunRequest,
     RunsFilter,
     ScheduleDefinition,
@@ -12,13 +13,15 @@ from dagster import (
     schedule,
 )
 
+from shared.config import get_settings
+
 ingest_and_transform = AssetSelection.groups("ingest", "transform")
 daily_ml_assets = AssetSelection.assets(
     ["ml", "features_pm25"], ["ml", "forecasts"], ["ml", "forecast_accuracy"]
 )
 
-# The run queue allows one run with this tag at a time (see infra/dagster/dagster.yaml),
-# so a sensor run and a schedule run can never load the raw table at the same moment.
+# The run queue allows one run with this tag at a time (see infra/dagster/dagster.yaml), so
+# two loads (Kaggle daily, OpenWeather hourly) never run dbt build or touch raw at once.
 INGEST_TAGS = {"haze/exclusive": "ingest"}
 
 daily_ingest = define_asset_job(
@@ -26,6 +29,13 @@ daily_ingest = define_asset_job(
     selection=ingest_and_transform,
     tags=INGEST_TAGS,
     description="Download the latest Kaggle file, load raw, run dbt build.",
+)
+
+hourly_openweather = define_asset_job(
+    "hourly_openweather",
+    selection=AssetSelection.groups("ingest_hourly", "transform"),
+    tags=INGEST_TAGS,
+    description="Collect current weather and air pollution for every active city, run dbt build.",
 )
 
 daily_ml = define_asset_job(
@@ -71,3 +81,13 @@ def daily_ingest_fallback(context: ScheduleEvaluationContext):
 
 daily_ml_schedule = ScheduleDefinition(job=daily_ml, cron_schedule="30 6 * * *")
 weekly_retrain_schedule = ScheduleDefinition(job=weekly_retrain, cron_schedule="0 3 * * 0")
+
+# Minute 15: the Air Pollution API's hourly reading is out by then. Switched on automatically
+# only when OPENWEATHER_API_KEY is set; otherwise it starts off.
+hourly_openweather_schedule = ScheduleDefinition(
+    job=hourly_openweather,
+    cron_schedule="15 * * * *",
+    default_status=DefaultScheduleStatus.RUNNING
+    if get_settings().openweather_api_key
+    else DefaultScheduleStatus.STOPPED,
+)

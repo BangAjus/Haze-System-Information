@@ -10,7 +10,7 @@ models:
         data_tests: [not_null]
       - name: n_obs
         data_tests:
-          - accepted_range: { arguments: { min_value: 1, max_value: 24 } }
+          - accepted_range: { arguments: { min_value: 1, max_value: 30 } }  # 24 hourly + Kaggle
 
   - name: country_daily
     description: One row per country per UTC day.

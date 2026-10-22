@@ -1,5 +1,5 @@
 -- Daily summary per city. Feeds city pages, history charts and the world map.
--- In phase 1 there is usually one reading per city per day, so n_obs is 1 (sometimes 2).
+-- Kaggle gives one reading per city per day; the hourly OpenWeather collection adds up to 24.
 
 with daily as (
     select

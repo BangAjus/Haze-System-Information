@@ -9,6 +9,47 @@ CREATE SCHEMA IF NOT EXISTS ml;
 CREATE SCHEMA IF NOT EXISTS ops;
 CREATE SCHEMA IF NOT EXISTS app;
 
+-- Hourly OpenWeather collection (pipeline/assets/openweather.py). Same column names as the
+-- Kaggle file, so staging can union the two sources.
+CREATE TABLE IF NOT EXISTS raw.openweather_snapshots (
+    geonameid          bigint NOT NULL,
+    city_name          text,
+    country_code       text,
+    country_name       text,
+    continent          text,
+    city_population    bigint,
+    geo_lat            double precision,
+    geo_lon            double precision,
+    weather_time_unix  bigint,
+    air_time_unix      bigint NOT NULL,
+    temp               double precision,
+    feels_like         double precision,
+    humidity           double precision,
+    pressure           double precision,
+    wind_speed         double precision,
+    wind_deg           double precision,
+    wind_gust          double precision,
+    clouds_all         double precision,
+    visibility         double precision,
+    rain_1h            double precision,
+    snow_1h            double precision,
+    is_daytime         bigint,
+    aqi                bigint,
+    pm2_5              double precision,
+    pm10               double precision,
+    co                 double precision,
+    "no"               double precision,
+    no2                double precision,
+    o3                 double precision,
+    so2                double precision,
+    nh3                double precision,
+    _source            text,
+    _ingested_at       timestamptz NOT NULL,
+    _dagster_run_id    text
+);
+CREATE INDEX IF NOT EXISTS openweather_snapshots_ingested_at
+    ON raw.openweather_snapshots (_ingested_at);
+
 -- Pipeline run metadata, written by the ops_recorder sensor
 CREATE TABLE IF NOT EXISTS ops.pipeline_runs (
     run_id         text PRIMARY KEY,

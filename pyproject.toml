@@ -25,6 +25,7 @@ pipeline = [
     "dbt-core>=1.9",
     "dbt-postgres>=1.9",
     "kaggle>=1.7",
+    "httpx>=0.27",
 ]
 ml = [
     "scikit-learn>=1.5",
