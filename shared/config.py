@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# ------ PHASE 1: SETTINGS FROM THE ENVIRONMENT --------
+
 
 class Settings(BaseSettings):
     """All runtime config, read from environment variables or a local .env file."""

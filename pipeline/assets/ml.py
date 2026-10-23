@@ -30,6 +30,8 @@ from pipeline.assets.training import select_and_register
 from shared.aqi import BREAKPOINTS, to_aqi_expr
 from shared.db import get_engine, read_sql, read_sql_copy, replace_rows, write_table
 
+# ------ PHASE 0: SETTINGS --------
+
 TARGETS = ["pm25", "pm10"]
 TRACK = "daily"
 FCT_AIR = AssetKey(["core", "fct_air_hourly"])
@@ -38,6 +40,9 @@ FCT_AIR = AssetKey(["core", "fct_air_hourly"])
 def features_key(target: str) -> AssetKey:
     """Built by dbt: dbt/models/ml/features_<target>.sql"""
     return AssetKey(["ml", f"features_{target}"])
+
+
+# ------ PHASE 1: TRAINING (ONE ASSET PER POLLUTANT) --------
 
 
 class TrainConfig(Config):
@@ -55,14 +60,17 @@ def make_model_asset(target: str) -> AssetsDefinition:
         key_prefix="ml",
     )
     def _model(context: AssetExecutionContext, config: TrainConfig) -> MaterializeResult:
+        # job 1: only known candidates
         unknown = set(config.candidates) - set(CANDIDATES)
         if unknown:
             raise ValueError(f"Unknown candidates {sorted(unknown)}. Options: {sorted(CANDIDATES)}")
 
+        # job 2: backtest every candidate on the dbt feature table
         features = read_sql(f"select * from ml.features_{target}")
         summary = summarize(backtest(features, candidates=config.candidates, target=target))
         labelled = features.drop_nulls("target")
 
+        # job 3: pick the best, fit it on all data, promote it if it passes the rule
         def fit_winner(name: str):
             model = fit(labelled, name, target=target)
             return model, labelled["as_of_utc"].min().date(), labelled["as_of_utc"].max().date()
@@ -85,13 +93,19 @@ pm25_model = make_model_asset("pm25")
 pm10_model = make_model_asset("pm10")
 
 
+# ------ PHASE 2: FORECASTS --------
+
+
 def _predict_latest(target: str) -> tuple[pl.DataFrame, str]:
+
+    # job 1: load this pollutant's champion
     champion = current_champion(TRACK, target)
     if champion is None:
         raise RuntimeError(f"No {target} champion yet. Materialize ml/{target}_model first.")
     model = load_model(champion["model_version"], ForecastModel)
     if model is None:
         raise RuntimeError(f"Can't load {champion['model_version']}. Run weekly_retrain.")
+    # job 2: newest feature row per city with a recent reading
     latest = read_sql(
         f"""
         select distinct on (geonameid) *
@@ -101,6 +115,7 @@ def _predict_latest(target: str) -> tuple[pl.DataFrame, str]:
         order by geonameid, as_of_utc desc
         """
     )
+    # job 3: predict
     preds = pl.from_pandas(model.predict(latest))
     out = pl.concat([latest.select("geonameid", "as_of_utc"), preds], how="horizontal")
     return out, champion["model_version"]
@@ -121,8 +136,10 @@ def forecasts() -> MaterializeResult:
 
     The forecast AQI is the worse of the two pollutants' levels.
     """
+    # job 1: predict both pollutants
     pm25, pm25_version = _predict_latest("pm25")
     pm10, pm10_version = _predict_latest("pm10")
+    # job 2: one row per city, AQI = the worse of the two levels
     issued_at = datetime.now(UTC)
     out = pm25.join(
         pm10.select(
@@ -150,6 +167,7 @@ def forecasts() -> MaterializeResult:
         "pm10_p90",
         pl.lit(pm10_version).alias("pm10_model_version"),
     )
+    # job 3: append to ml.forecasts
     rows = write_table(out, "forecasts", schema="ml", if_exists="append")
     return MaterializeResult(
         metadata={"rows_written": rows, "pm25_model": pm25_version, "pm10_model": pm10_version}
@@ -171,6 +189,9 @@ def one_forecast_per_active_city() -> AssetCheckResult:
         passed=forecast >= active,
         metadata={"active_cities": active, "forecast_cities": forecast},
     )
+
+
+# ------ PHASE 3: ACCURACY --------
 
 
 def aqi_case_sql(col: str, pollutant: str) -> str:
@@ -211,6 +232,7 @@ def forecast_accuracy() -> MaterializeResult:
 
     One row per forecast; the actual is the hourly reading nearest the target time (±6h).
     """
+    # job 1: one query per track and pollutant
     parts = [
         _accuracy_select(
             "daily", "pm25", "ml.forecasts", "pm25_pred", "pm25_p10", "pm25_p90", "model_version"
@@ -245,6 +267,7 @@ def forecast_accuracy() -> MaterializeResult:
             "and f.target = 'pm10'",
         ),
     ]
+    # job 2: rebuild ml.forecast_accuracy from all of them
     with get_engine().begin() as conn:
         conn.execute(text("drop table if exists ml.forecast_accuracy"))
         conn.execute(text("create table ml.forecast_accuracy as " + " union all ".join(parts)))
@@ -252,6 +275,9 @@ def forecast_accuracy() -> MaterializeResult:
             text("select track || '/' || target, count(*) from ml.forecast_accuracy group by 1")
         ).all()
     return MaterializeResult(metadata={k: v for k, v in counts} or {"rows_written": 0})
+
+
+# ------ PHASE 4: DRIFT --------
 
 
 def _drift_rows(
@@ -279,6 +305,8 @@ def _drift_rows(
 @asset(group_name="ml", compute_kind="numpy", deps=[forecasts, FCT_AIR], key_prefix="ml")
 def drift() -> MaterializeResult:
     """PSI of each input feature: last 7 days vs. the champion's training period."""
+
+    # job 1: daily track: the dbt feature tables
     rows = []
     for target in TARGETS:
         champ = read_sql(
@@ -299,7 +327,7 @@ def drift() -> MaterializeResult:
             numeric = [c for c in FEATURE_COLS if c not in skip]
             rows += _drift_rows("daily", target, ref, cur, numeric)
 
-    # Hourly track inputs are the pollutant series themselves
+    # job 2: hourly track: its inputs are the pollutant series themselves
     hourly_champ = read_sql(
         "select min(train_start), max(train_end) from ml.model_runs "
         "where alias = 'champion' and track = 'hourly'"
@@ -317,6 +345,7 @@ def drift() -> MaterializeResult:
         for target in TARGETS:
             rows += _drift_rows("hourly", target, ref, cur, cols)
 
+    # job 3: save to ml.drift and report the worst feature
     if not rows:
         return MaterializeResult(metadata={"skipped": "no champion yet"})
     df = pl.DataFrame(rows)

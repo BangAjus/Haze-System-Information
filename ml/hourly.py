@@ -24,6 +24,8 @@ import polars as pl
 
 from shared.aqi import to_aqi
 
+# ------ PHASE 0: SETTINGS --------
+
 WINDOW = 72  # hours of history the models see
 HORIZON = 24  # hours ahead to predict
 MAX_FILL_GAP = 3  # forward-fill gaps up to this many hours; longer gaps break windows
@@ -33,7 +35,7 @@ CONTINENTS = ["AF", "AN", "AS", "EU", "NA", "OC", "SA"]
 CALIBRATION_SHARE = 0.10
 
 
-# --- Building the hourly grid ------------------------------------------------------------
+# ------ PHASE 1: BUILD THE HOURLY GRID --------
 
 
 @dataclass
@@ -55,14 +57,16 @@ class HourlyData:
 
 def build_hourly(df: pl.DataFrame) -> HourlyData:
     """df: fct_air_hourly joined with lat, lon, continent, population."""
+
+    # job 1: complete hourly grid per city, so window positions mean real hours
     df = df.sort("geonameid", "hour_utc")
-    # Complete hourly grid per city, so window positions mean real hours
     grid = (
         df.select("geonameid", "hour_utc")
         .group_by("geonameid")
         .agg(pl.datetime_ranges(pl.col("hour_utc").min(), pl.col("hour_utc").max(), "1h"))
         .explode("hour_utc")
     )
+    # job 2: join readings onto the grid and forward-fill gaps up to MAX_FILL_GAP hours
     static_cols = ["lat", "lon", "continent", "population"]
     statics = df.group_by("geonameid").agg(pl.col(static_cols).last())
     full = (
@@ -80,6 +84,7 @@ def build_hourly(df: pl.DataFrame) -> HourlyData:
 
     del df, grid  # free the source tables as soon as the grid is joined
 
+    # job 3: sequence channels (log1p pollutants + time of day/week) as float32
     n = full.height
     hours = full["hour_utc"]
     hod = hours.dt.hour().to_numpy().astype(np.float32) * np.float32(2 * np.pi / 24)
@@ -91,6 +96,7 @@ def build_hourly(df: pl.DataFrame) -> HourlyData:
     seq[:, -4:] = np.column_stack([np.sin(hod), np.cos(hod), np.sin(dow), np.cos(dow)])
     logp = seq[:, : len(POLLUTANTS)]
 
+    # job 4: static city features (location, population, continent)
     cont = full["continent"].to_numpy()
     static = np.empty((n, 3 + len(CONTINENTS)), dtype=np.float32)
     static[:, 0] = full["lat"].to_numpy() / 90
@@ -104,7 +110,7 @@ def build_hourly(df: pl.DataFrame) -> HourlyData:
     hours_np = hours.to_numpy()
     del full, hours, cont
 
-    # Window validity: WINDOW complete rows ending here, and a target HORIZON later,
+    # job 5: window validity: WINDOW complete rows ending here, and a target HORIZON later,
     # all within the same city
     row_ok = ~np.isnan(logp).any(axis=1)
     new_city = np.r_[True, city[1:] != city[:-1]]
@@ -119,7 +125,7 @@ def build_hourly(df: pl.DataFrame) -> HourlyData:
     target_ok[in_range] = row_ok[target_idx[in_range]]
     valid = window_ok & same_city & target_ok
 
-    # Newest complete window per city (for forecasting; no target needed)
+    # job 6: newest complete window per city (for forecasting; no target needed)
     last_rows = np.r_[np.where(new_city)[0][1:] - 1, len(city) - 1]
     latest = np.array([r for r in last_rows if window_ok[r]], dtype=np.int64)
 
@@ -158,7 +164,7 @@ def targets(data: HourlyData, rows: np.ndarray, target: str) -> np.ndarray:
     return data.raw[TARGET_COLUMN[target]][rows + HORIZON]
 
 
-# --- Lag features for gradient boosting --------------------------------------------------
+# ------ PHASE 2: LAG FEATURES FOR GRADIENT BOOSTING --------
 
 
 LAG_HOURS = [0, 1, 2, 3, 6, 12, 24, 48, 71]
@@ -183,7 +189,7 @@ def lag_features(data: HourlyData, rows: np.ndarray, chunk: int = 50_000) -> np.
     return np.column_stack(parts)
 
 
-# --- Models ------------------------------------------------------------------------------
+# ------ PHASE 3: MODELS (HGB, LSTM, GRU) --------
 
 
 @dataclass
@@ -281,16 +287,18 @@ class RNNRegressor:
     def fit(self, data, rows, y_log, val_rows=None, val_y=None):
         import torch
 
+        # job 1: seed, and cap the training anchors to keep CPU time reasonable
         torch.manual_seed(self.seed)
         torch.set_num_threads(4)
         rng = np.random.default_rng(self.seed)
         if len(rows) > self.max_train:
             keep = rng.choice(len(rows), self.max_train, replace=False)
             rows, y_log = rows[keep], y_log[keep]
-        # Standardize sequence channels with training statistics
+        # job 2: standardize sequence channels with training statistics
         sample = windows(data, rows[: min(len(rows), 20_000)]).reshape(-1, data.seq.shape[1])
         self.mu, self.sd = sample.mean(0), sample.std(0) + 1e-6
 
+        # job 3: train with L1 loss, early-stopping on the validation anchors
         self.net = self._build(data.seq.shape[1], data.static.shape[1])
         opt = torch.optim.Adam(self.net.parameters(), lr=self.lr)
         loss_fn = torch.nn.L1Loss()
@@ -311,6 +319,7 @@ class RNNRegressor:
                 patience -= 1
                 if patience == 0:
                     break
+        # job 4: keep the best epoch's weights
         if best_state is not None:
             self.net.load_state_dict(best_state)
         return self
@@ -336,18 +345,21 @@ HOURLY_CANDIDATES: dict[str, Callable[[], object]] = {
 def fit_hourly(data: HourlyData, rows: np.ndarray, name: str, target: str) -> HourlyModel:
     """Fit on the older 90% of anchors; the newest 10% calibrate the range (and early-stop
     the RNNs). One fit per call keeps RNN training time reasonable on CPU."""
+
+    # job 1: older 90% to fit, newest 10% to calibrate
     rows = np.sort(rows)
     n_cal = max(1, int(len(rows) * CALIBRATION_SHARE))
     fit_rows, cal_rows = rows[:-n_cal], rows[-n_cal:]
     y_fit = np.log1p(targets(data, fit_rows, target))
     y_cal = np.log1p(targets(data, cal_rows, target))
+    # job 2: fit, then turn calibration errors into p10/p90 offsets
     est = HOURLY_CANDIDATES[name]().fit(data, fit_rows, y_fit, cal_rows, y_cal)
     resid = y_cal - est.predict(data, cal_rows)
     lo, hi = np.quantile(resid, [0.1, 0.9])
     return HourlyModel(name, target, est, float(lo), float(hi))
 
 
-# --- Evaluation --------------------------------------------------------------------------
+# ------ PHASE 4: EVALUATION --------
 
 
 def score(actual: np.ndarray, pred: np.ndarray, target: str) -> dict[str, float]:
@@ -370,11 +382,12 @@ def backtest_hourly(
     test_stride: int = 3,
 ) -> pl.DataFrame:
     """Expanding-window backtest over the newest weeks. One row per fold per model."""
+    # job 1: newest usable hour anchors the folds
     end = data.hour[data.valid].max().astype("datetime64[us]").item()
     col = TARGET_COLUMN[target]
     rows = []
     for k in range(n_folds, 0, -1):
-        # Train anchors must have their target before the test period starts
+        # job 2: fold k: train anchors whose targets land before the test window
         test_start = end - timedelta(days=test_days * k)
         test_end = test_start + timedelta(days=test_days)
         train = anchors(data, None, test_start - timedelta(hours=HORIZON), train_stride)
@@ -384,6 +397,7 @@ def backtest_hourly(
         actual = targets(data, test, target)
         fold = dict(fold=k, test_start=test_start, n_test=len(test))
 
+        # job 3: score the two baselines
         persistence = data.raw[col][test]
         ch = POLLUTANTS.index(col)
         mean_24h = np.expm1(
@@ -397,6 +411,7 @@ def backtest_hourly(
         rows.append({"model": "persistence", **fold, **score(actual, persistence, target)})
         rows.append({"model": "mean_24h", **fold, **score(actual, mean_24h, target)})
 
+        # job 4: fit and score every candidate
         for name in candidates:
             preds = fit_hourly(data, train, name, target).predict(data, test)
             covered = (actual >= preds["p10"]) & (actual <= preds["p90"])

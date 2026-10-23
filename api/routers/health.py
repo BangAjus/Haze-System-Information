@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 from api.db import fetch_one
 
+# ------ PHASE 1: HEALTH CHECK --------
+
 router = APIRouter(tags=["health"])
 
 

@@ -15,6 +15,8 @@ from dagster import (
 
 from shared.config import get_settings
 
+# ------ PHASE 0: SELECTIONS AND QUEUE TAGS --------
+
 ingest_and_transform = AssetSelection.groups("ingest", "transform")
 daily_ml_assets = AssetSelection.assets(
     ["ml", "features_pm25"],
@@ -35,6 +37,8 @@ def max_runtime(minutes: int) -> dict:
     """Run monitoring cancels the run after this long (frees the queue if a worker died)."""
     return {"dagster/max_runtime": str(minutes * 60)}
 
+
+# ------ PHASE 1: JOBS --------
 
 daily_ingest = define_asset_job(
     "daily_ingest",
@@ -83,6 +87,8 @@ weekly_retrain = define_asset_job(
     description="Both tracks, both pollutants: backtest every candidate, promote the best.",
 )
 
+# ------ PHASE 2: SCHEDULES --------
+
 FALLBACK_SKIP_WINDOW = timedelta(hours=20)
 
 
@@ -93,6 +99,7 @@ def daily_ingest_fallback(context: ScheduleEvaluationContext):
     Skips when an ingest is already queued or running, or succeeded recently, so the
     sensor and this schedule don't both load the same data.
     """
+    # job 1: look for an ingest queued, running or finished in the last 20h
     since = datetime.now(UTC) - FALLBACK_SKIP_WINDOW
     recent = context.instance.get_runs(
         filters=RunsFilter(
@@ -107,6 +114,7 @@ def daily_ingest_fallback(context: ScheduleEvaluationContext):
         ),
         limit=1,
     )
+    # job 2: skip if found, otherwise start one
     if recent:
         return SkipReason(f"daily_ingest already ran or is running (run {recent[0].run_id[:8]})")
     return RunRequest(tags={"trigger": "schedule"})

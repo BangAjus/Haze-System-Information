@@ -30,6 +30,8 @@ from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardSc
 from ml.features import CATEGORICAL_COLS, FEATURE_COLS
 from shared.aqi import to_aqi
 
+# ------ PHASE 0: SETTINGS --------
+
 CALIBRATION_SHARE = 0.10  # newest share of training rows used to measure errors for the range
 TARGET_COL = "target"
 
@@ -40,7 +42,7 @@ BASELINE_COLS = {
 }
 
 
-# --- Candidate models --------------------------------------------------------------------
+# ------ PHASE 1: CANDIDATE MODELS --------
 
 
 def _numeric(cols: list[str]) -> list[str]:
@@ -111,7 +113,7 @@ CANDIDATES: dict[str, Callable[[list[str]], RegressorMixin]] = {
 }
 
 
-# --- Fitted model ------------------------------------------------------------------------
+# ------ PHASE 2: FITTING (WITH A P10-P90 RANGE) --------
 
 
 @dataclass
@@ -154,21 +156,25 @@ def fit(
     train: pl.DataFrame, name: str = "hgb", cols: list[str] = FEATURE_COLS, target: str = "pm25"
 ) -> ForecastModel:
     """Fit one candidate, with a p10-p90 range from its errors on the newest training rows."""
+
+    # job 1: split off the newest 10% of rows for calibration
     train = train.drop_nulls(TARGET_COL).sort("as_of_utc")
     n_cal = max(1, int(train.height * CALIBRATION_SHARE))
     early, cal = train.head(train.height - n_cal), train.tail(n_cal)
 
+    # job 2: fit on the older 90%, measure errors on the newest 10% -> p10/p90 offsets
     X_early, y_early = to_xy(early, cols)
     X_cal, y_cal = to_xy(cal, cols)
     resid = y_cal - CANDIDATES[name](cols).fit(X_early, y_early).predict(X_cal)
     lo, hi = np.quantile(resid, [0.1, 0.9])
 
+    # job 3: refit on all rows for the final model
     X, y = to_xy(train, cols)
     estimator = CANDIDATES[name](cols).fit(X, y)
     return ForecastModel(name, estimator, list(cols), float(lo), float(hi), target=target)
 
 
-# --- Evaluation --------------------------------------------------------------------------
+# ------ PHASE 3: EVALUATION AND SELECTION --------
 
 
 def score(actual: np.ndarray, pred: np.ndarray, target: str = "pm25") -> dict[str, float]:
@@ -193,12 +199,14 @@ def backtest(
 
     Returns one row per fold per model, including the two baselines.
     """
+    # job 1: labelled rows in time order
     candidates = candidates or list(CANDIDATES)
     lag_col, mean_col = BASELINE_COLS[target]
     data = features.drop_nulls(TARGET_COL).sort("as_of_utc")
     end = data["as_of_utc"].max()
     rows = []
     for k in range(n_folds, 0, -1):
+        # job 2: fold k trains on everything before its test window
         test_start = end - timedelta(days=test_days * k)
         test_end = test_start + timedelta(days=test_days)
         train = data.filter(pl.col("as_of_utc") < test_start)
@@ -209,11 +217,13 @@ def backtest(
         actual = test[TARGET_COL].to_numpy()
         fold = dict(fold=k, test_start=test_start, n_test=len(actual))
 
+        # job 3: score the two baselines
         persistence = test[lag_col].to_numpy()
         rows.append({"model": "persistence", **fold, **score(actual, persistence, target)})
         city_mean_7 = test[mean_col].fill_null(test[lag_col]).to_numpy()
         rows.append({"model": "city_mean_7", **fold, **score(actual, city_mean_7, target)})
 
+        # job 4: fit and score every candidate
         for name in candidates:
             preds = fit(train, name, cols, target).predict(test)
             covered = (actual >= preds["p10"]) & (actual <= preds["p90"])

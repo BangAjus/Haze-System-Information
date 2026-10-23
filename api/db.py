@@ -5,6 +5,8 @@ from sqlalchemy import text
 
 from shared.db import get_engine
 
+# ------ PHASE 1: QUERY HELPERS --------
+
 
 def fetch_all(query: str, **params) -> list[dict[str, Any]]:
     with get_engine().connect() as conn:

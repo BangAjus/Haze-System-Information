@@ -9,9 +9,13 @@ from pipeline import jobs, sensors
 from pipeline.assets import dbt, ingest, ml, ml_hourly, openweather
 from pipeline.resources import KaggleResource, OpenWeatherResource
 
+# ------ PHASE 1: DBT EXECUTABLE --------
+
 # Prefer the dbt installed next to this Python (the .venv), even if the venv isn't activated
 _venv_dbt = Path(sys.executable).parent / "dbt"
 DBT_EXECUTABLE = str(_venv_dbt) if _venv_dbt.exists() else (shutil.which("dbt") or "dbt")
+
+# ------ PHASE 2: EVERYTHING DAGSTER LOADS --------
 
 defs = Definitions(
     assets=load_assets_from_modules([ingest, openweather, dbt, ml, ml_hourly]),

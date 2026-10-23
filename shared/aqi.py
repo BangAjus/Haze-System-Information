@@ -7,6 +7,8 @@ so the forecast AQI is the worse of those two levels (an approximation without t
 
 import polars as pl
 
+# ------ PHASE 1: SCALE AND BREAKPOINTS --------
+
 AQI_LABELS = {1: "Good", 2: "Fair", 3: "Moderate", 4: "Poor", 5: "Very poor"}
 
 # Lower bound (µg/m³) of levels 2-5, per pollutant
@@ -15,6 +17,9 @@ BREAKPOINTS = {
     "pm10": [20.0, 50.0, 100.0, 200.0],
 }
 PM25_BREAKPOINTS = BREAKPOINTS["pm25"]
+
+
+# ------ PHASE 2: CONVERSIONS --------
 
 
 def to_aqi(value: float, pollutant: str = "pm25") -> int:

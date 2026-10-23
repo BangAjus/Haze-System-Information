@@ -3,12 +3,17 @@ from pathlib import Path
 from dagster import AssetExecutionContext, AssetKey
 from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
 
+# ------ PHASE 1: DBT PROJECT --------
+
 DBT_DIR = Path(__file__).resolve().parents[2] / "dbt"
 
 dbt_project = DbtProject(project_dir=DBT_DIR, profiles_dir=DBT_DIR)
 # In `dagster dev` this runs `dbt parse` so the manifest is always fresh.
 # In Docker the manifest is built at image build time.
 dbt_project.prepare_if_dev()
+
+
+# ------ PHASE 2: MAP DBT NODES TO DAGSTER ASSETS --------
 
 
 class HazeTranslator(DagsterDbtTranslator):
@@ -24,6 +29,9 @@ class HazeTranslator(DagsterDbtTranslator):
         if len(fqn) > 1 and fqn[1] == "ml":
             return "ml"
         return "transform"
+
+
+# ------ PHASE 3: TRANSFORM (DBT BUILD) --------
 
 
 @dbt_assets(manifest=dbt_project.manifest_path, dagster_dbt_translator=HazeTranslator())

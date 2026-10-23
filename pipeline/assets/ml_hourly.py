@@ -31,6 +31,8 @@ from ml.train import summarize
 from pipeline.assets.training import select_and_register
 from shared.db import read_sql_copy, write_table
 
+# ------ PHASE 0: SETTINGS AND DATA LOADING --------
+
 TRACK = "hourly"
 FCT_AIR = AssetKey(["core", "fct_air_hourly"])
 HISTORY_DAYS = 400  # a year of backfill plus margin
@@ -51,6 +53,9 @@ def load_hourly(days: int = HISTORY_DAYS):
     )
 
 
+# ------ PHASE 1: TRAINING (ONE ASSET PER POLLUTANT) --------
+
+
 class HourlyTrainConfig(Config):
     """Which model types compete. LSTM/GRU take a few minutes each on CPU."""
 
@@ -66,13 +71,17 @@ def make_hourly_model_asset(target: str) -> AssetsDefinition:
         key_prefix="ml",
     )
     def _model(context: AssetExecutionContext, config: HourlyTrainConfig) -> MaterializeResult:
+        # job 1: only known candidates
         unknown = set(config.candidates) - set(HOURLY_CANDIDATES)
         if unknown:
             raise ValueError(f"Unknown candidates {sorted(unknown)}: {sorted(HOURLY_CANDIDATES)}")
+
+        # job 2: load the hourly grid and backtest every candidate
         data = load_hourly()
         context.log.info(f"{len(data.seq):,} hourly rows, {int(data.valid.sum()):,} valid anchors")
         summary = summarize(backtest_hourly(data, target, config.candidates))
 
+        # job 3: pick the best, fit it on all anchors, promote it if it passes the rule
         def fit_winner(name: str):
             rows = anchors(data, None, None, stride=6)
             model = fit_hourly(data, rows, name, target)
@@ -101,22 +110,28 @@ hourly_pm25_model = make_hourly_model_asset("pm25")
 hourly_pm10_model = make_hourly_model_asset("pm10")
 
 
+# ------ PHASE 2: HOURLY FORECASTS --------
+
+
 @asset(group_name="ml_hourly", compute_kind="pytorch", deps=[FCT_AIR], key_prefix="ml")
 def forecasts_hourly(context: AssetExecutionContext) -> MaterializeResult:
     """24h-ahead PM2.5 and PM10 for every city with a complete last-72h window.
 
     Skips a pollutant (without failing) until its hourly champion exists.
     """
-    data = load_hourly(days=7)  # only the newest windows are needed
+    # job 1: newest 72h window per city (only the last week is needed)
+    data = load_hourly(days=7)
     rows = data.latest
     issued_at = datetime.now(UTC)
     written, used = 0, {}
     for target in ("pm25", "pm10"):
+        # job 2: load this pollutant's champion, or skip until one exists
         champion = current_champion(TRACK, target)
         model = champion and load_model(champion["model_version"], HourlyModel)
         if not model:
             context.log.warning(f"No loadable hourly {target} champion yet; skipping.")
             continue
+        # job 3: predict 24h ahead and append to ml.forecasts_hourly
         preds = model.predict(data, rows)
         hours = data.hour[rows].astype("datetime64[us]")
         out = pl.DataFrame(

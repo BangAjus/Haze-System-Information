@@ -22,6 +22,8 @@ from pipeline.resources import KaggleResource
 from shared.config import get_settings
 from shared.db import read_sql, replace_rows
 
+# ------ PHASE 0: SETTINGS --------
+
 # Columns staging relies on. If the author renames any of them the load fails loudly.
 REQUIRED_COLUMNS = {
     "geonameid",
@@ -57,19 +59,6 @@ REQUIRED_COLUMNS = {
     "units_weather",
 }
 
-
-@asset(group_name="ingest", compute_kind="kaggle")
-def raw_kaggle_file(context: AssetExecutionContext, kaggle: KaggleResource) -> MaterializeResult:
-    """Latest Kaggle file, saved under data/raw/source=kaggle/ingest_date=YYYY-MM-DD/."""
-    ingest_date = datetime.now(UTC).date().isoformat()
-    dest = get_settings().raw_dir / "source=kaggle" / f"ingest_date={ingest_date}"
-    path = kaggle.download(dest)
-    context.log.info(f"Downloaded {path}")
-    return MaterializeResult(
-        metadata={"path": str(path), "bytes": path.stat().st_size, "ingest_date": ingest_date}
-    )
-
-
 # "Has the pipeline loaded anything lately?" Evaluated by the daemon even when no run happens,
 # so a dead sensor or a dataset that stopped updating still shows up as stale.
 DAILY_FRESHNESS = FreshnessPolicy.time_window(
@@ -82,6 +71,28 @@ OBSERVATION_WARN_AGE = timedelta(hours=36)
 OBSERVATION_ERROR_AGE = timedelta(hours=60)
 
 
+# ------ PHASE 1: EXTRACT --------
+
+
+@asset(group_name="ingest", compute_kind="kaggle")
+def raw_kaggle_file(context: AssetExecutionContext, kaggle: KaggleResource) -> MaterializeResult:
+    """Latest Kaggle file, saved under data/raw/source=kaggle/ingest_date=YYYY-MM-DD/."""
+
+    # job 1: download today's version into its own dated folder
+    ingest_date = datetime.now(UTC).date().isoformat()
+    dest = get_settings().raw_dir / "source=kaggle" / f"ingest_date={ingest_date}"
+    path = kaggle.download(dest)
+    context.log.info(f"Downloaded {path}")
+
+    # job 2: report where it went and how big it is
+    return MaterializeResult(
+        metadata={"path": str(path), "bytes": path.stat().st_size, "ingest_date": ingest_date}
+    )
+
+
+# ------ PHASE 2: LOAD --------
+
+
 @asset(
     group_name="ingest",
     compute_kind="postgres",
@@ -91,27 +102,37 @@ OBSERVATION_ERROR_AGE = timedelta(hours=60)
 )
 def weather_air_snapshots(context: AssetExecutionContext) -> MaterializeResult:
     """The Kaggle file loaded as-is into raw.weather_air_snapshots, plus lineage columns."""
+
+    # job 1: read the newest downloaded file
     latest = sorted(get_settings().raw_dir.glob("source=kaggle/ingest_date=*/*.parquet"))[-1]
     df = pl.read_parquet(latest)
 
+    # job 2: fail loudly if the author renamed or dropped a column staging needs
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise ValueError(f"Source file is missing columns: {sorted(missing)}")
 
+    # job 3: add lineage columns
     df = df.with_columns(
         pl.lit("kaggle").alias("_source"),
         pl.lit(str(latest)).alias("_file"),
         pl.lit(datetime.now(UTC)).alias("_ingested_at"),
         pl.lit(context.run_id).alias("_dagster_run_id"),
     )
-    # Truncate and reload: dropping the table would fail, dbt views depend on it
+
+    # job 4: truncate and reload (dropping the table would fail, dbt views depend on it)
     rows = replace_rows(df, "weather_air_snapshots", schema="raw")
     return MaterializeResult(metadata={"rows_written": rows, "source_file": str(latest)})
+
+
+# ------ PHASE 3: QUALITY CHECKS --------
 
 
 @asset_check(asset=weather_air_snapshots, blocking=True)
 def raw_row_count_stable() -> AssetCheckResult:
     """The full-history file should only grow. A drop means a bad or truncated file."""
+
+    # job 1: count rows and distinct (city, time) keys
     df = read_sql(
         """
         select count(*) as n_rows,
@@ -120,6 +141,8 @@ def raw_row_count_stable() -> AssetCheckResult:
         """
     )
     n_rows, n_keys = df.row(0)
+
+    # job 2: pass only with rows and no duplicate keys
     return AssetCheckResult(
         passed=n_rows > 0 and n_rows == n_keys,
         severity=AssetCheckSeverity.ERROR,
@@ -130,8 +153,12 @@ def raw_row_count_stable() -> AssetCheckResult:
 @asset_check(asset=weather_air_snapshots)
 def observations_are_recent() -> AssetCheckResult:
     """Warns at 36h and fails at 60h since the newest observation in the file."""
+
+    # job 1: age of the newest observation
     newest = read_sql("select max(weather_time_unix) as t from raw.weather_air_snapshots").item()
     age = datetime.now(UTC) - datetime.fromtimestamp(newest, UTC)
+
+    # job 2: warn when stale, error when very stale
     severity = AssetCheckSeverity.ERROR if age > OBSERVATION_ERROR_AGE else AssetCheckSeverity.WARN
     return AssetCheckResult(
         passed=age <= OBSERVATION_WARN_AGE,

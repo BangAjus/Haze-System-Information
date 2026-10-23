@@ -27,6 +27,8 @@ from pipeline.resources import OpenWeatherResource
 from shared.config import get_settings
 from shared.db import insert_new_rows, read_sql, write_table
 
+# ------ PHASE 0: SETTINGS --------
+
 CALLS_PER_CITY = 2  # Current Weather + Air Pollution
 MONTHLY_CALL_BUDGET = 950_000  # free tier is 1,000,000; keep a margin for retries and tests
 MIN_SUCCESS_SHARE = 0.98
@@ -39,8 +41,13 @@ class CollectConfig(Config):
     max_cities: int | None = None
 
 
+# ------ PHASE 1: HELPERS (BUDGET + TRANSFORM) --------
+
+
 def _calls_this_month() -> int:
     """Approximate calls made this month: two per row collected (retries not counted)."""
+
+    # job 1: count this month's collected rows, two calls each
     rows = read_sql(
         """
         select count(*) as n from raw.openweather_snapshots
@@ -52,10 +59,14 @@ def _calls_this_month() -> int:
 
 def to_row(city: dict, weather: dict, air: dict) -> dict:
     """Flatten one city's two API responses into the Kaggle file's column names."""
+
+    # job 1: pick out the nested parts of both responses
     reading = air["list"][0]
     comp = reading["components"]
     sun = weather.get("sys", {})
     wind = weather.get("wind", {})
+
+    # job 2: one flat row with the Kaggle file's column names
     return {
         "geonameid": city["geonameid"],
         "city_name": city["city_name"],
@@ -91,6 +102,9 @@ def to_row(city: dict, weather: dict, air: dict) -> dict:
     }
 
 
+# ------ PHASE 2: HOURLY COLLECTION (EXTRACT + LOAD) --------
+
+
 @asset(
     group_name="ingest_hourly",
     compute_kind="openweather",
@@ -105,6 +119,8 @@ def openweather_snapshots(
     context: AssetExecutionContext, openweather: OpenWeatherResource, config: CollectConfig
 ) -> MaterializeResult:
     """Current weather and air pollution for every active city, appended each hour."""
+
+    # job 1: city list (all active cities, or the first max_cities for a test run)
     cities = read_sql(
         """
         select geonameid, city_name, country_code, country_name, continent, population,
@@ -115,6 +131,7 @@ def openweather_snapshots(
     if config.max_cities:
         cities = cities[: config.max_cities]
 
+    # job 2: skip the run if it would pass the monthly call budget
     used = _calls_this_month()
     needed = len(cities) * CALLS_PER_CITY
     if used + needed > MONTHLY_CALL_BUDGET:
@@ -123,11 +140,13 @@ def openweather_snapshots(
         )
         return MaterializeResult(metadata={"skipped": "monthly budget", "calls_this_month": used})
 
+    # job 3: extract weather + air pollution per city (paced under 60 calls/min)
     collected_at = datetime.now(UTC)
     results, failures = openweather.fetch(cities, log=context.log)
     for f in failures[:5]:
         context.log.warning(f"City {f['geonameid']} failed: {f['error']}")
 
+    # job 4: transform responses into rows with lineage columns
     rows = [to_row(r["city"], r["weather"], r["air"]) for r in results]
     df = pl.DataFrame(rows).with_columns(
         pl.lit("openweather").alias("_source"),
@@ -135,7 +154,7 @@ def openweather_snapshots(
         pl.lit(context.run_id).alias("_dagster_run_id"),
     )
 
-    # Keep the exact responses on disk too, so any hour can be replayed
+    # job 5: keep the rows on disk too, so any hour can be replayed
     raw_dir = (
         get_settings().raw_dir
         / "source=openweather"
@@ -144,6 +163,7 @@ def openweather_snapshots(
     raw_dir.mkdir(parents=True, exist_ok=True)
     df.write_parquet(raw_dir / f"hour={collected_at:%H}.parquet")
 
+    # job 6: load (append) into raw.openweather_snapshots
     written = write_table(df, "openweather_snapshots", schema="raw", if_exists="append")
     return MaterializeResult(
         metadata={
@@ -157,9 +177,14 @@ def openweather_snapshots(
     )
 
 
+# ------ PHASE 3: QUALITY CHECK --------
+
+
 @asset_check(asset=openweather_snapshots)
 def most_cities_collected() -> AssetCheckResult:
     """At least 98% of active cities in the latest collection."""
+
+    # job 1: cities in the latest collection vs. active cities
     df = read_sql(
         """
         select
@@ -171,11 +196,16 @@ def most_cities_collected() -> AssetCheckResult:
     )
     collected, active = df.row(0)
     share = collected / max(active, 1)
+
+    # job 2: warn below 98%
     return AssetCheckResult(
         passed=share >= MIN_SUCCESS_SHARE,
         severity=AssetCheckSeverity.WARN,
         metadata={"collected": collected, "active_cities": active, "share": round(share, 4)},
     )
+
+
+# ------ PHASE 4: HISTORY BACKFILL (EXTRACT + LOAD) --------
 
 
 class BackfillConfig(Config):
@@ -196,6 +226,7 @@ def openweather_air_history(
     """
     import httpx
 
+    # job 1: city list and the time window to fetch
     cities = read_sql(
         "select geonameid, lat, lon from core.dim_city where is_active order by population desc"
     ).to_dicts()
@@ -206,6 +237,7 @@ def openweather_air_history(
     start = end - config.days * 86400
     inserted, fetched, failed, batch = 0, 0, [], []
 
+    # job 2: load helper, inserting only (city, hour) rows not stored yet
     def flush():
         nonlocal inserted, batch
         if batch:
@@ -219,6 +251,7 @@ def openweather_air_history(
             )
             batch = []
 
+    # job 3: extract a year of hourly readings per city, loading every 25 cities
     with httpx.Client(timeout=60) as client:
         for i, city in enumerate(cities, 1):
             try:
@@ -240,6 +273,7 @@ def openweather_air_history(
                 context.log.info(f"{i}/{len(cities)} cities, {inserted:,} new rows")
     flush()
 
+    # job 4: report what came in
     return MaterializeResult(
         metadata={
             "cities": len(cities),

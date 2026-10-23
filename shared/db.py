@@ -5,10 +5,15 @@ from sqlalchemy import Engine, create_engine
 
 from shared.config import get_settings
 
+# ------ PHASE 1: CONNECTION --------
+
 
 @lru_cache
 def get_engine() -> Engine:
     return create_engine(get_settings().database_url, pool_pre_ping=True)
+
+
+# ------ PHASE 2: READ --------
 
 
 def read_sql(query: str, **params) -> pl.DataFrame:
@@ -21,6 +26,9 @@ def read_sql(query: str, **params) -> pl.DataFrame:
         df = pl.DataFrame(rows, schema=list(result.keys()), orient="row", infer_schema_length=None)
     # Postgres numeric arrives as Decimal; the rest of the code expects floats
     return df.with_columns(pl.col(pl.Decimal).cast(pl.Float64))
+
+
+# ------ PHASE 3: WRITE --------
 
 
 def write_table(df: pl.DataFrame, table: str, schema: str, if_exists: str = "replace") -> int:
@@ -44,9 +52,12 @@ def replace_rows(df: pl.DataFrame, table: str, schema: str) -> int:
 
     name = f"{schema}.{table}"
     with get_engine().begin() as conn:
+        # job 1: empty the table if it exists (never drop it)
         exists = conn.execute(text("select to_regclass(:t)"), {"t": name}).scalar() is not None
         if exists:
             conn.execute(text(f"truncate table {name}"))
+
+        # job 2: write the new rows in the same transaction
         df.write_database(
             name,
             connection=conn,
@@ -68,9 +79,11 @@ def insert_new_rows(df: pl.DataFrame, table: str, schema: str, key: list[str]) -
     tmp = f"_tmp_{uuid.uuid4().hex[:8]}"
     cols = ", ".join(f'"{c}"' for c in df.columns)
     with get_engine().begin() as conn:
+        # job 1: stage the rows in a temporary table
         df.write_database(
             f"{schema}.{tmp}", connection=conn, if_table_exists="replace", engine="sqlalchemy"
         )
+        # job 2: copy over only keys the table doesn't have, then drop the stage
         inserted = conn.execute(
             text(
                 f"insert into {schema}.{table} ({cols}) select {cols} from {schema}.{tmp} "
@@ -81,6 +94,9 @@ def insert_new_rows(df: pl.DataFrame, table: str, schema: str, key: list[str]) -
     return inserted
 
 
+# ------ PHASE 4: FAST BULK READ --------
+
+
 def read_sql_copy(query: str) -> pl.DataFrame:
     """Large query results via Postgres COPY, streamed as CSV straight into Polars.
 
@@ -89,6 +105,7 @@ def read_sql_copy(query: str) -> pl.DataFrame:
     """
     import io
 
+    # job 1: stream the query result out of Postgres as CSV
     buf = io.BytesIO()
     raw = get_engine().raw_connection()
     try:
@@ -98,5 +115,6 @@ def read_sql_copy(query: str) -> pl.DataFrame:
                     buf.write(chunk)
     finally:
         raw.close()
+    # job 2: parse it straight into Polars
     buf.seek(0)
     return pl.read_csv(buf, try_parse_dates=True)

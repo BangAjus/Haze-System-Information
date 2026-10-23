@@ -21,6 +21,8 @@ from ml.registry import (
 from ml.train import pick_best, should_promote
 from shared.config import get_settings
 
+# ------ PHASE 1: SELECT, FIT AND REGISTER THE WINNER --------
+
 
 def select_and_register(
     context: AssetExecutionContext,
@@ -35,6 +37,7 @@ def select_and_register(
     """fit_winner(name) -> (model, train_start, train_end), trained on all data."""
     import mlflow
 
+    # job 1: best candidate that beats persistence with an honest range
     trained_at = datetime.now(UTC)
     stamp = trained_at.strftime("%Y%m%d%H%M")
     context.log.info(f"{track}/{target} backtest (mean of folds, best first):\n{summary}")
@@ -43,7 +46,7 @@ def select_and_register(
     mlflow.set_tracking_uri(get_settings().mlflow_tracking_uri)
     mlflow.set_experiment(f"{target}_{track}_forecast")
     with mlflow.start_run(run_name=f"train-{stamp}") as parent:
-        # One child run per candidate, so MLflow shows them side by side
+        # job 2: log every candidate (MLflow child runs + ml.model_candidates)
         for row in summary.iter_rows(named=True):
             with mlflow.start_run(run_name=row["model"], nested=True):
                 mlflow.log_metrics({k: v for k, v in row.items() if isinstance(v, float)})
@@ -55,10 +58,12 @@ def select_and_register(
             context.log.warning("No candidate beat persistence with an honest range.")
             return MaterializeResult(metadata={"selected": "none"})
 
+        # job 3: fit the winner on all data and save it
         model, train_start, train_end = fit_winner(best["model"])
         version = f"{target}-{track}-{best['model'].replace('_', '')}-{stamp}"
         path = save_model(model, version)
 
+        # job 4: compare with the champion (an unloadable one doesn't count)
         champion = current_champion(track, target)
         if champion and load_model(champion["model_version"], model_type_check) is None:
             context.log.warning(f"Champion {champion['model_version']} is unloadable; replacing.")
@@ -69,6 +74,7 @@ def select_and_register(
         )
         mlflow.log_artifact(str(path))
 
+    # job 5: record the run, promoting it if it won
     metrics = {k: best.get(k) for k in METRIC_KEYS}
     record_run(
         version=version,

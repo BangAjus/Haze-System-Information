@@ -5,10 +5,15 @@ from fastapi import APIRouter, Query
 
 from api.db import fetch_all
 
+# ------ PHASE 0: ROUTER --------
+
 router = APIRouter(prefix="/ml", tags=["model"])
 
 Track = Literal["daily", "hourly"]
 Target = Literal["pm25", "pm10"]
+
+
+# ------ PHASE 1: MODELS --------
 
 
 @router.get("/models")
@@ -40,6 +45,9 @@ def candidates(track: Track = "daily", target: Target = "pm25"):
         track=track,
         target=target,
     )
+
+
+# ------ PHASE 2: MONITORING --------
 
 
 @router.get("/accuracy")

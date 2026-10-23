@@ -5,9 +5,14 @@ from fastapi import APIRouter, Query
 from api.db import fetch_all, fetch_one
 from shared.aqi import AQI_LABELS
 
+# ------ PHASE 0: ROUTER --------
+
 router = APIRouter(prefix="/cities", tags=["cities"])
 
 ATTRIBUTION = "Weather and air pollution data: OpenWeather, via Kaggle (CC BY 4.0)"
+
+
+# ------ PHASE 1: FIND CITIES --------
 
 
 @router.get("")
@@ -55,6 +60,9 @@ def get_city(geonameid: int):
     return fetch_one("select * from core.dim_city where geonameid = :id", id=geonameid)
 
 
+# ------ PHASE 2: READINGS --------
+
+
 @router.get("/{geonameid}/current")
 def current(geonameid: int):
     row = fetch_one(
@@ -88,12 +96,18 @@ def history(geonameid: int, start: date | None = None, end: date | None = None):
     )
 
 
+# ------ PHASE 3: FORECASTS --------
+
+
 @router.get("/{geonameid}/forecast")
 def forecast(geonameid: int):
+
+    # job 1: the city
     city = fetch_one(
         "select geonameid, city_name, country_code from core.dim_city where geonameid = :id",
         id=geonameid,
     )
+    # job 2: latest daily-track forecast (PM2.5 + PM10)
     rows = fetch_all(
         """
         select horizon_h, target_time_utc, pm25_pred, pm25_p10, pm25_p90,
@@ -106,6 +120,7 @@ def forecast(geonameid: int):
         """,
         id=geonameid,
     )
+    # job 3: latest hourly-track forecast per pollutant
     hourly = fetch_all(
         """
         select distinct on (target) target, horizon_h, target_time_utc, pred, p10, p90,
@@ -117,6 +132,7 @@ def forecast(geonameid: int):
         id=geonameid,
     )
 
+    # job 4: shape the response
     def band(pred, lo, hi):
         return None if pred is None else {"pred": pred, "p10": lo, "p90": hi}
 

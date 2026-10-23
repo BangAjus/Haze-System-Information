@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routers import cities, health, ml, ops
 
+# ------ PHASE 1: APP AND ROUTERS --------
+
 app = FastAPI(
     title="Haze API",
     version="0.1.0",

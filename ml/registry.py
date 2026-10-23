@@ -16,7 +16,12 @@ from sqlalchemy import text
 from shared.config import get_settings
 from shared.db import get_engine, read_sql, write_table
 
+# ------ PHASE 0: SETTINGS --------
+
 METRIC_KEYS = ("mae", "rmse", "aqi_acc", "baseline_mae", "interval_coverage")
+
+
+# ------ PHASE 1: MODEL FILES --------
 
 
 def model_path(version: str) -> Path:
@@ -41,6 +46,9 @@ def load_model(version: str, expected_type: type, required_attr: str = "feature_
         return None
     ok = isinstance(model, expected_type) and hasattr(model, required_attr)
     return model if ok else None
+
+
+# ------ PHASE 2: CHAMPIONS AND RUN HISTORY --------
 
 
 def current_champion(track: str, target: str) -> dict | None:
@@ -94,6 +102,7 @@ def record_run(
 ) -> None:
     """Insert the run into ml.model_runs; if promoted, archive the previous champion."""
     with get_engine().begin() as conn:
+        # job 1: if promoted, archive the current champion for this track and target
         if promote:
             conn.execute(
                 text(
@@ -104,6 +113,7 @@ def record_run(
                 ),
                 dict(track=track, target=target),
             )
+        # job 2: record this run
         conn.execute(
             text(
                 """

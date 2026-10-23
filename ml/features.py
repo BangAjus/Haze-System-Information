@@ -5,6 +5,8 @@ The feature table itself is built by dbt: dbt/models/ml/features_pm25.sql
 with that model's columns.
 """
 
+# ------ PHASE 1: FEATURE GROUPS --------
+
 WEATHER_COLS = [
     "temp_c",
     "humidity_pct",
@@ -22,6 +24,8 @@ PM10_COLS = [
     "pm10_roll_mean_7",
     "pm25_pm10_ratio",
 ]
+
+# ------ PHASE 2: WHAT THE DAILY MODELS TRAIN ON --------
 
 FEATURE_COLS = [
     *[f"pm25_lag_{i}" for i in range(8)],

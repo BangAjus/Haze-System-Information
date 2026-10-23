@@ -3,7 +3,12 @@ from fastapi import APIRouter, Query
 from api.db import fetch_all, fetch_one
 from shared.config import get_settings
 
+# ------ PHASE 0: ROUTER --------
+
 router = APIRouter(prefix="/ops", tags=["pipeline operations"])
+
+
+# ------ PHASE 1: OVERVIEW --------
 
 
 @router.get("/summary")
@@ -27,6 +32,9 @@ def summary():
                and target_time_utc > now() - interval '7 days') as model_mae_7d
         """
     )
+
+
+# ------ PHASE 2: RUNS AND CHECKS --------
 
 
 @router.get("/runs")

@@ -4,6 +4,8 @@ from dagster import ConfigurableResource
 
 from shared.config import get_settings
 
+# ------ PHASE 1: KAGGLE SOURCE --------
+
 
 class KaggleResource(ConfigurableResource):
     """Downloads the dataset file and reports its current version fingerprint.
@@ -23,15 +25,21 @@ class KaggleResource(ConfigurableResource):
 
     def fingerprint(self) -> str:
         """Changes whenever the author publishes a new version of the file."""
+
+        # job 1: find our file in the dataset's file list
         files = self._api().dataset_list_files(self.dataset).files
         match = next(f for f in files if f.name == self.file)
+        # job 2: name + size + creation date change with every new version
         created = getattr(match, "creation_date", None) or getattr(match, "creationDate", "")
         return f"{match.name}|{match.total_bytes}|{created}"
 
     def download(self, dest_dir: Path) -> Path:
+
+        # job 1: download the file into dest_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
         self._api().dataset_download_file(self.dataset, self.file, path=str(dest_dir), quiet=True)
         path = dest_dir / Path(self.file).name
+        # job 2: unzip it if Kaggle sent a .zip
         zipped = path.with_name(path.name + ".zip")
         if zipped.exists():
             import zipfile
@@ -40,6 +48,9 @@ class KaggleResource(ConfigurableResource):
                 zf.extractall(dest_dir)
             zipped.unlink()
         return path
+
+
+# ------ PHASE 2: OPENWEATHER SOURCE --------
 
 
 class OpenWeatherResource(ConfigurableResource):
@@ -59,14 +70,17 @@ class OpenWeatherResource(ConfigurableResource):
         import httpx
 
         params = {"lat": lat, "lon": lon, "units": "metric", "appid": self.api_key, **extra}
+
+        # job 1: call, retrying transport errors, 429s and 5xx with backoff
         for attempt in range(4):
             started = time.monotonic()
             try:
                 resp = client.get(f"{self.base_url}/{path}", params=params)
             except httpx.TransportError:
                 resp = None
-            # Pace every call, successful or not, so retries don't burst past the limit
+            # job 2: pace every call, successful or not, so retries don't burst past the limit
             time.sleep(max(0.0, 60 / self.calls_per_minute - (time.monotonic() - started)))
+            # job 3: return on success; a rejected key stops everything
             if resp is not None and resp.status_code == 200:
                 return resp.json()
             if resp is not None and resp.status_code in (401, 403):
@@ -78,8 +92,11 @@ class OpenWeatherResource(ConfigurableResource):
         """Weather + air pollution for each city. Returns (results, failures)."""
         import httpx
 
+        # job 1: need a key
         if not self.api_key:
             raise ValueError("OPENWEATHER_API_KEY is not set")
+
+        # job 2: weather + air pollution per city; one bad city doesn't stop the run
         results, failures = [], []
         with httpx.Client(timeout=20) as client:
             for i, city in enumerate(cities, 1):
