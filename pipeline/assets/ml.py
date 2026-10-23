@@ -1,17 +1,18 @@
-"""ML assets: weekly model training, daily forecasts and accuracy tracking.
+"""Daily-track ML assets: per-pollutant model training, forecasts and accuracy tracking.
 
-The feature table ml.features_pm25 is a dbt model. The model logic lives in the ml/ package;
-these assets only load inputs, call it and save outputs.
+Feature tables ml.features_pm25 and ml.features_pm10 are dbt models. The model logic lives in
+ml/train.py, and selection/promotion in pipeline/assets/training.py; these assets wire it up.
 """
 
-import pickle
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from dagster import (
     AssetCheckResult,
+    AssetCheckSeverity,
     AssetExecutionContext,
     AssetKey,
+    AssetsDefinition,
     Config,
     FreshnessPolicy,
     MaterializeResult,
@@ -20,29 +21,23 @@ from dagster import (
 )
 from sqlalchemy import text
 
-from ml.train import CANDIDATES, PM25Model, backtest, fit, pick_best, should_promote, summarize
-from shared.aqi import pm25_to_aqi_expr
-from shared.config import get_settings
-from shared.db import get_engine, read_sql, write_table
+from ml.drift import psi
+from ml.drift import status as drift_status
+from ml.features import FEATURE_COLS
+from ml.registry import current_champion, load_model
+from ml.train import CANDIDATES, ForecastModel, backtest, fit, summarize
+from pipeline.assets.training import select_and_register
+from shared.aqi import BREAKPOINTS, to_aqi_expr
+from shared.db import get_engine, read_sql, read_sql_copy, replace_rows, write_table
 
-FCT = AssetKey(["core", "fct_observation"])
-FEATURES = AssetKey(["ml", "features_pm25"])  # built by dbt: dbt/models/ml/features_pm25.sql
-
-
-def _load_model(version: str) -> PM25Model | None:
-    """Load a saved model, or None if it was saved by an incompatible older ml/train.py."""
-    try:
-        with open(_model_path(version), "rb") as f:
-            model = pickle.load(f)
-    except (FileNotFoundError, AttributeError, ModuleNotFoundError):
-        return None
-    return model if isinstance(model, PM25Model) and hasattr(model, "feature_cols") else None
+TARGETS = ["pm25", "pm10"]
+TRACK = "daily"
+FCT_AIR = AssetKey(["core", "fct_air_hourly"])
 
 
-def _model_path(version: str):
-    path = get_settings().haze_data_dir / "models" / f"{version}.pkl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+def features_key(target: str) -> AssetKey:
+    """Built by dbt: dbt/models/ml/features_<target>.sql"""
+    return AssetKey(["ml", f"features_{target}"])
 
 
 class TrainConfig(Config):
@@ -51,107 +46,70 @@ class TrainConfig(Config):
     candidates: list[str] = list(CANDIDATES)
 
 
-@asset(group_name="ml", compute_kind="sklearn", deps=[FEATURES], key_prefix="ml")
-def pm25_model(context: AssetExecutionContext, config: TrainConfig) -> MaterializeResult:
-    """Backtest every candidate, train the best one on all data, promote it if it passes."""
-    import mlflow
-
-    unknown = set(config.candidates) - set(CANDIDATES)
-    if unknown:
-        raise ValueError(f"Unknown candidates {sorted(unknown)}. Options: {sorted(CANDIDATES)}")
-
-    features = read_sql("select * from ml.features_pm25")
-    summary = summarize(backtest(features, candidates=config.candidates))
-    context.log.info(f"Backtest (mean of folds, best first):\n{summary}")
-
-    trained_at = datetime.now(UTC)
-    best = pick_best(summary, config.candidates)
-    mlflow.set_tracking_uri(get_settings().mlflow_tracking_uri)
-    mlflow.set_experiment("pm25_forecast")
-
-    with mlflow.start_run(run_name="train-" + trained_at.strftime("%Y%m%d%H%M")) as parent:
-        # One child run per candidate, so MLflow shows them side by side
-        for row in summary.iter_rows(named=True):
-            with mlflow.start_run(run_name=row["model"], nested=True):
-                mlflow.log_metrics({k: v for k, v in row.items() if isinstance(v, float)})
-        write_table(
-            summary.with_columns(
-                pl.lit(trained_at).alias("trained_at"),
-                pl.lit(parent.info.run_id).alias("mlflow_run_id"),
-                (pl.col("model") == (best or {}).get("model")).alias("selected"),
-            ),
-            "model_candidates",
-            schema="ml",
-            if_exists="append",
-        )
-        if best is None:
-            mlflow.log_param("selected", "none")
-            context.log.warning(
-                "No candidate beat persistence with an honest range. Keeping champion."
-            )
-            return MaterializeResult(metadata={"selected": "none", "candidates": len(summary)})
-
-        labelled = features.drop_nulls("target_pm25")
-        model = fit(labelled, best["model"])
-        version = f"pm25-{best['model'].replace('_', '')}-" + trained_at.strftime("%Y%m%d%H%M")
-        with open(_model_path(version), "wb") as f:
-            pickle.dump(model, f)
-
-        champion = read_sql(
-            "select model_version, mae from ml.model_runs where alias = 'champion' limit 1"
-        )
-        current = champion.row(0, named=True) if champion.height else None
-        if current and _load_model(current["model_version"]) is None:
-            # The champion can't be loaded by this code (older format), so it can't forecast
-            context.log.warning(f"Champion {current['model_version']} is unloadable; replacing it.")
-            current = None
-        promote = should_promote(best, current)
-        mlflow.log_params(
-            {"selected": best["model"], "model_version": version, "promoted": promote}
-        )
-        mlflow.log_artifact(str(_model_path(version)))
-
-    metrics = {k: best[k] for k in ("mae", "rmse", "aqi_acc", "baseline_mae", "interval_coverage")}
-    with get_engine().begin() as conn:
-        if promote:
-            conn.execute(
-                text("update ml.model_runs set alias = 'archived' where alias = 'champion'")
-            )
-        conn.execute(
-            text(
-                """
-                insert into ml.model_runs (model_version, model_type, mlflow_run_id, trained_at,
-                    train_start, train_end, mae, rmse, aqi_acc, baseline_mae, interval_coverage,
-                    alias)
-                values (:v, :type, :run, :trained_at, :start, :end, :mae, :rmse, :aqi_acc,
-                    :baseline_mae, :interval_coverage, :alias)
-                """
-            ),
-            dict(
-                v=version,
-                type=best["model"],
-                run=parent.info.run_id,
-                trained_at=trained_at,
-                start=labelled["as_of_utc"].min().date(),
-                end=labelled["as_of_utc"].max().date(),
-                alias="champion" if promote else "rejected",
-                **metrics,
-            ),
-        )
-    return MaterializeResult(
-        metadata={
-            "model_version": version,
-            "selected": best["model"],
-            "promoted": promote,
-            **metrics,
-        }
+def make_model_asset(target: str) -> AssetsDefinition:
+    @asset(
+        name=f"{target}_model",
+        group_name="ml",
+        compute_kind="sklearn",
+        deps=[features_key(target)],
+        key_prefix="ml",
     )
+    def _model(context: AssetExecutionContext, config: TrainConfig) -> MaterializeResult:
+        unknown = set(config.candidates) - set(CANDIDATES)
+        if unknown:
+            raise ValueError(f"Unknown candidates {sorted(unknown)}. Options: {sorted(CANDIDATES)}")
+
+        features = read_sql(f"select * from ml.features_{target}")
+        summary = summarize(backtest(features, candidates=config.candidates, target=target))
+        labelled = features.drop_nulls("target")
+
+        def fit_winner(name: str):
+            model = fit(labelled, name, target=target)
+            return model, labelled["as_of_utc"].min().date(), labelled["as_of_utc"].max().date()
+
+        return select_and_register(
+            context,
+            track=TRACK,
+            target=target,
+            summary=summary,
+            candidates=config.candidates,
+            fit_winner=fit_winner,
+            model_type_check=ForecastModel,
+        )
+
+    _model.__doc__ = f"Backtest every candidate for {target}, train the best, maybe promote it."
+    return _model
+
+
+pm25_model = make_model_asset("pm25")
+pm10_model = make_model_asset("pm10")
+
+
+def _predict_latest(target: str) -> tuple[pl.DataFrame, str]:
+    champion = current_champion(TRACK, target)
+    if champion is None:
+        raise RuntimeError(f"No {target} champion yet. Materialize ml/{target}_model first.")
+    model = load_model(champion["model_version"], ForecastModel)
+    if model is None:
+        raise RuntimeError(f"Can't load {champion['model_version']}. Run weekly_retrain.")
+    latest = read_sql(
+        f"""
+        select distinct on (geonameid) *
+        from ml.features_{target}
+        -- Only cities with a recent reading; stale cities get no forecast
+        where as_of_utc > (select max(as_of_utc) from ml.features_{target}) - interval '3 days'
+        order by geonameid, as_of_utc desc
+        """
+    )
+    preds = pl.from_pandas(model.predict(latest))
+    out = pl.concat([latest.select("geonameid", "as_of_utc"), preds], how="horizontal")
+    return out, champion["model_version"]
 
 
 @asset(
     group_name="ml",
     compute_kind="sklearn",
-    deps=[FEATURES, pm25_model],
+    deps=[features_key("pm25"), features_key("pm10"), pm25_model, pm10_model],
     key_prefix="ml",
     # The apps show these; stale forecasts should be visible in Dagster and on the dashboard
     freshness_policy=FreshnessPolicy.time_window(
@@ -159,39 +117,43 @@ def pm25_model(context: AssetExecutionContext, config: TrainConfig) -> Materiali
     ),
 )
 def forecasts() -> MaterializeResult:
-    """Next-reading PM2.5 forecast for every city, from the champion model."""
-    champion = read_sql("select model_version from ml.model_runs where alias = 'champion' limit 1")
-    if champion.is_empty():
-        raise RuntimeError("No champion model yet. Materialize ml/pm25_model first.")
-    version = champion.item()
-    model = _load_model(version)
-    if model is None:
-        raise RuntimeError(f"Can't load {version} (missing or older format). Run weekly_retrain.")
+    """Next-reading PM2.5 and PM10 forecasts for every city, from each pollutant's champion.
 
-    latest = read_sql(
-        """
-        select distinct on (geonameid) *
-        from ml.features_pm25
-        -- Only cities with a recent reading; stale cities get no forecast
-        where as_of_utc > (select max(as_of_utc) from ml.features_pm25) - interval '3 days'
-        order by geonameid, as_of_utc desc
-        """
-    )
-    preds = pl.from_pandas(model.predict(latest))
+    The forecast AQI is the worse of the two pollutants' levels.
+    """
+    pm25, pm25_version = _predict_latest("pm25")
+    pm10, pm10_version = _predict_latest("pm10")
     issued_at = datetime.now(UTC)
-    out = pl.concat([latest.select("geonameid", "as_of_utc"), preds], how="horizontal").select(
+    out = pm25.join(
+        pm10.select(
+            "geonameid",
+            pl.col("pred").alias("pm10_pred"),
+            pl.col("p10").alias("pm10_p10"),
+            pl.col("p90").alias("pm10_p90"),
+        ),
+        on="geonameid",
+        how="left",
+    ).select(
         "geonameid",
         pl.lit(issued_at).alias("issued_at_utc"),
         pl.lit(24, dtype=pl.Int16).alias("horizon_h"),
         (pl.col("as_of_utc") + pl.duration(hours=24)).alias("target_time_utc"),
-        "pm25_pred",
-        "pm25_p10",
-        "pm25_p90",
-        pm25_to_aqi_expr("pm25_pred").alias("aqi_pred"),
-        pl.lit(version).alias("model_version"),
+        pl.col("pred").alias("pm25_pred"),
+        pl.col("p10").alias("pm25_p10"),
+        pl.col("p90").alias("pm25_p90"),
+        pl.max_horizontal(
+            to_aqi_expr("pred", "pm25"), to_aqi_expr(pl.col("pm10_pred").fill_null(0), "pm10")
+        ).alias("aqi_pred"),
+        pl.lit(pm25_version).alias("model_version"),
+        "pm10_pred",
+        "pm10_p10",
+        "pm10_p90",
+        pl.lit(pm10_version).alias("pm10_model_version"),
     )
     rows = write_table(out, "forecasts", schema="ml", if_exists="append")
-    return MaterializeResult(metadata={"rows_written": rows, "model_version": version})
+    return MaterializeResult(
+        metadata={"rows_written": rows, "pm25_model": pm25_version, "pm10_model": pm10_version}
+    )
 
 
 @asset_check(asset=forecasts)
@@ -211,31 +173,172 @@ def one_forecast_per_active_city() -> AssetCheckResult:
     )
 
 
-@asset(group_name="ml", compute_kind="postgres", deps=[forecasts, FCT], key_prefix="ml")
+def aqi_case_sql(col: str, pollutant: str) -> str:
+    """SQL CASE for a pollutant's AQI level, from the same breakpoints as shared/aqi.py."""
+    whens = " ".join(
+        f"when {col} < {b} then {level}" for level, b in enumerate(BREAKPOINTS[pollutant], 1)
+    )
+    return f"(case {whens} else 5 end)"
+
+
+def _accuracy_select(
+    track: str, target: str, table: str, pred: str, lo: str, hi: str, version: str, where: str = ""
+) -> str:
+    actual = "pm2_5" if target == "pm25" else "pm10"
+    return f"""
+        select '{track}' as track, '{target}' as target, f.geonameid, f.target_time_utc,
+               f.{version} as model_version, f.{pred} as pred, o.{actual} as actual,
+               abs(f.{pred} - o.{actual}) as abs_error,
+               o.{actual} between f.{lo} and f.{hi} as in_interval,
+               {aqi_case_sql(f"f.{pred}", target)} as aqi_pred,
+               {aqi_case_sql(f"o.{actual}", target)} as aqi_actual
+        from {table} f
+        join lateral (
+            select pm2_5, pm10 from core.fct_air_hourly o
+            where o.geonameid = f.geonameid
+              and o.hour_utc between f.target_time_utc - interval '6 hours'
+                                 and f.target_time_utc + interval '6 hours'
+            order by abs(extract(epoch from o.hour_utc - f.target_time_utc))
+            limit 1
+        ) o on true
+        where f.{pred} is not null {where}
+    """
+
+
+@asset(group_name="ml", compute_kind="postgres", deps=[forecasts, FCT_AIR], key_prefix="ml")
 def forecast_accuracy() -> MaterializeResult:
-    """Each forecast next to the reading that actually arrived (within 6h of the target)."""
+    """Every past forecast (both tracks, both pollutants) next to the reading that arrived.
+
+    One row per forecast; the actual is the hourly reading nearest the target time (±6h).
+    """
+    parts = [
+        _accuracy_select(
+            "daily", "pm25", "ml.forecasts", "pm25_pred", "pm25_p10", "pm25_p90", "model_version"
+        ),
+        _accuracy_select(
+            "daily",
+            "pm10",
+            "ml.forecasts",
+            "pm10_pred",
+            "pm10_p10",
+            "pm10_p90",
+            "pm10_model_version",
+        ),
+        _accuracy_select(
+            "hourly",
+            "pm25",
+            "ml.forecasts_hourly",
+            "pred",
+            "p10",
+            "p90",
+            "model_version",
+            "and f.target = 'pm25'",
+        ),
+        _accuracy_select(
+            "hourly",
+            "pm10",
+            "ml.forecasts_hourly",
+            "pred",
+            "p10",
+            "p90",
+            "model_version",
+            "and f.target = 'pm10'",
+        ),
+    ]
     with get_engine().begin() as conn:
-        conn.execute(
-            text(
-                """
-                drop table if exists ml.forecast_accuracy;
-                create table ml.forecast_accuracy as
-                select f.geonameid, f.target_time_utc, f.model_version,
-                       f.pm25_pred, o.pm2_5 as pm25_actual,
-                       abs(f.pm25_pred - o.pm2_5) as abs_error,
-                       f.aqi_pred, o.aqi as aqi_actual,
-                       o.pm2_5 between f.pm25_p10 and f.pm25_p90 as in_interval
-                from ml.forecasts f
-                join lateral (
-                    select pm2_5, aqi from core.fct_observation o
-                    where o.geonameid = f.geonameid
-                      and o.observed_at_utc between f.target_time_utc - interval '6 hours'
-                                                and f.target_time_utc + interval '6 hours'
-                    order by abs(extract(epoch from o.observed_at_utc - f.target_time_utc))
-                    limit 1
-                ) o on true;
-                """
+        conn.execute(text("drop table if exists ml.forecast_accuracy"))
+        conn.execute(text("create table ml.forecast_accuracy as " + " union all ".join(parts)))
+        counts = conn.execute(
+            text("select track || '/' || target, count(*) from ml.forecast_accuracy group by 1")
+        ).all()
+    return MaterializeResult(metadata={k: v for k, v in counts} or {"rows_written": 0})
+
+
+def _drift_rows(
+    track: str, target: str, reference: pl.DataFrame, current: pl.DataFrame, features: list[str]
+) -> list[dict]:
+    today = datetime.now(UTC).date()
+    out = []
+    for f in features:
+        value = psi(
+            reference[f].cast(pl.Float64).to_numpy(), current[f].cast(pl.Float64).to_numpy()
+        )
+        out.append(
+            dict(
+                date_utc=today,
+                track=track,
+                target=target,
+                feature=f,
+                psi=value,
+                status=drift_status(value),
             )
         )
-        n = conn.execute(text("select count(*) from ml.forecast_accuracy")).scalar_one()
-    return MaterializeResult(metadata={"rows_written": n})
+    return out
+
+
+@asset(group_name="ml", compute_kind="numpy", deps=[forecasts, FCT_AIR], key_prefix="ml")
+def drift() -> MaterializeResult:
+    """PSI of each input feature: last 7 days vs. the champion's training period."""
+    rows = []
+    for target in TARGETS:
+        champ = read_sql(
+            """
+            select train_start, train_end from ml.model_runs
+            where alias = 'champion' and track = 'daily' and target = :t
+            """,
+            t=target,
+        )
+        if champ.height:
+            start, end = champ.row(0)
+            feats = read_sql(f"select * from ml.features_{target}")
+            ref = feats.filter(pl.col("as_of_utc").dt.date().is_between(start, end))
+            cur = feats.filter(pl.col("as_of_utc") > pl.col("as_of_utc").max() - timedelta(days=7))
+            # Calendar features shift by construction (a recent week is always one month),
+            # and continent is categorical: neither says anything about data drift
+            skip = {"continent", "dow", "month_sin", "month_cos"}
+            numeric = [c for c in FEATURE_COLS if c not in skip]
+            rows += _drift_rows("daily", target, ref, cur, numeric)
+
+    # Hourly track inputs are the pollutant series themselves
+    hourly_champ = read_sql(
+        "select min(train_start), max(train_end) from ml.model_runs "
+        "where alias = 'champion' and track = 'hourly'"
+    )
+    if hourly_champ.height and hourly_champ.row(0)[0] is not None:
+        start, end = hourly_champ.row(0)
+        cols = ["pm2_5", "pm10", "no2", "o3", "co", "so2", "nh3"]
+        # Millions of rows: stream via COPY (read_sql's per-row tuples crashed the process)
+        air = read_sql_copy(
+            f"select hour_utc, {', '.join(cols)} from core.fct_air_hourly "
+            "where hour_utc > now() - interval '400 days'"
+        )
+        ref = air.filter(pl.col("hour_utc").dt.date().is_between(start, end))
+        cur = air.filter(pl.col("hour_utc") > pl.col("hour_utc").max() - timedelta(days=7))
+        for target in TARGETS:
+            rows += _drift_rows("hourly", target, ref, cur, cols)
+
+    if not rows:
+        return MaterializeResult(metadata={"skipped": "no champion yet"})
+    df = pl.DataFrame(rows)
+    replace_rows(df, "drift", "ml")
+    worst = df.sort("psi", descending=True, nulls_last=True).row(0, named=True)
+    return MaterializeResult(
+        metadata={
+            "features_checked": df.height,
+            "drifted": int((df["status"] == "drift").sum()),
+            "watch": int((df["status"] == "watch").sum()),
+            "worst_feature": f"{worst['track']}/{worst['target']}/{worst['feature']}",
+            "worst_psi": round(worst["psi"], 3) if worst["psi"] == worst["psi"] else None,
+        }
+    )
+
+
+@asset_check(asset=drift)
+def no_feature_drifted() -> AssetCheckResult:
+    """Warns when any input feature's PSI reaches 0.25 (time to retrain or check the data)."""
+    df = read_sql("select track, target, feature, psi from ml.drift where status = 'drift'")
+    return AssetCheckResult(
+        passed=df.is_empty(),
+        severity=AssetCheckSeverity.WARN,
+        metadata={"drifted": [f"{r[0]}/{r[1]}/{r[2]}={r[3]:.2f}" for r in df.rows()][:20]},
+    )

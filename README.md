@@ -68,9 +68,10 @@ off: turn them on in the Dagster UI under Automation, or with `dagster sensor st
 | Job | Trigger | Does |
 |---|---|---|
 | `daily_ingest` | `kaggle_update_sensor` (new Kaggle version); fallback 06:00 UTC, skipped if an ingest ran in the last 20h | Download, load raw, `dbt build`. Only one runs at a time (queue limit) |
-| `hourly_openweather` | Every hour at :15 (on automatically when `OPENWEATHER_API_KEY` is set) | Weather + air pollution for every active city from OpenWeather, then `dbt build` |
-| `daily_ml` | 06:30 UTC | Features, forecasts, accuracy |
-| `weekly_retrain` | Sunday 03:00 UTC | Backtest every candidate model (`hgb`, `random_forest`, `ridge`), train the best, promote if it beats persistence and the champion by 2% |
+| `hourly_openweather` | Every hour at :15 (on automatically when `OPENWEATHER_API_KEY` is set) | Weather + air pollution for every active city from OpenWeather, `dbt build`, then the hourly 24h-ahead forecasts |
+| `daily_ml` | 06:30 UTC | Daily features, PM2.5 + PM10 forecasts, accuracy, drift |
+| `weekly_retrain` | Sunday 03:00 UTC | Both tracks × both pollutants: backtest every candidate, train the best, promote it if it passes the rule |
+| `backfill_air_history` | Manual | One-off: a year of hourly pollution history per city |
 
 ## Hourly OpenWeather collection
 
@@ -100,15 +101,37 @@ To halve the usage, change the schedule's cron in `pipeline/jobs.py` to every 2 
   the newest observation is over 36h old (error over 60h). The same rule is in dbt:
   `make dbt-freshness`.
 
-## Model candidates
+## Forecast models
 
-Candidates live in `ml/train.py` (`CANDIDATES`). Choose which ones compete when launching
-`weekly_retrain` in the Dagster launchpad (`ops: ml__pm25_model: config: candidates`). Each
-training run writes every candidate's backtest to `ml.model_candidates` and to MLflow as
-nested runs. To add a model, write a `make_<name>(cols)` function and add it to `CANDIDATES`.
+Two tracks, each forecasting **PM2.5 and PM10 separately** (each pollutant has its own
+models and champion). The forecast AQI is the worse of the two pollutants' levels.
+
+| Track | Predicts | Inputs | Candidates | Retrained |
+|---|---|---|---|---|
+| daily | next reading (~24h ahead) | dbt `features_pm25` / `features_pm10`: lags, rolling means, weather, calendar, location | `hgb`, `random_forest`, `ridge` | weekly |
+| hourly | value 24h ahead, refreshed every hour | last 72h of all 8 pollutants from `core.fct_air_hourly`, time of day/week, location | `hgb_lags`, `lstm`, `gru` (PyTorch, CPU) | weekly |
+
+Both tracks use the same rules: an expanding-window backtest against persistence baselines,
+p10–p90 ranges from split-conformal errors, and promotion only when a candidate beats
+persistence, keeps its range honest (70–90% coverage) and beats the champion by 2%.
+Every candidate's backtest goes to `ml.model_candidates` and to MLflow as nested runs.
+
+Choose which candidates compete in the Dagster launchpad
+(`ops: ml__pm25_model: config: candidates`, or `ml__hourly_pm25_model` for the hourly track).
+To add a model, add it to `CANDIDATES` in `ml/train.py` or `HOURLY_CANDIDATES` in `ml/hourly.py`.
+
+**Hourly history:** the hourly models need long series, so `backfill_air_history` (manual job)
+fetches up to a year of hourly pollution per city from OpenWeather's history endpoint. One call
+per city covers the whole year (~600 calls in total). Re-runs skip hours already stored.
+
+**Monitoring:** `ml/forecast_accuracy` scores every past forecast (both tracks, both
+pollutants) against the hourly reading nearest its target time; the API breaks errors down by
+continent or AQI band. `ml/drift` computes PSI per input feature (last 7 days vs. the
+champion's training period) and warns at PSI ≥ 0.25.
 
 ## Status
 
-Phases 0–1 done, including hourly OpenWeather collection. Phase 3 model in place (the
-feature table still uses one reading per city per day; hourly features are a next step). Not yet built: check results and asset row
+Phases 0, 1 and 3 done: ingestion (Kaggle daily, OpenWeather hourly, one-year hourly
+backfill), the warehouse, and both forecast tracks for PM2.5 and PM10 with accuracy and drift
+monitoring. Not yet built: check results and asset row
 counts in `ops.*`, `/v1/ops/assets`, manual run trigger, device/alert endpoints, web and iOS apps.

@@ -3,9 +3,10 @@ version: 2
 models:
   - name: features_pm25
     description: >
-      One row per city per as-of time. Features use only data at or before as_of_utc;
-      target_pm25 is the next reading when it arrives 18-30h later, otherwise null.
+      Next-reading PM2.5 forecast features. One row per city per as-of time. Features use only data at or before
+      as_of_utc; target is the next reading when it arrives 18-30h later, otherwise null.
     data_tests:
+      - target_within_window
       - unique_combination:
           arguments:
             columns: [geonameid, as_of_utc]
@@ -19,6 +20,29 @@ models:
       - name: dow
         data_tests:
           - accepted_range: { arguments: { min_value: 1, max_value: 7 } }
-      - name: target_pm25
+      - name: target
         data_tests:
-          - accepted_range: { arguments: { min_value: 0, max_value: 1000 } }
+          - accepted_range: { arguments: { min_value: 0, max_value: 20000 } }
+
+  - name: features_pm10
+    description: >
+      Next-reading PM10 forecast features. One row per city per as-of time. Features use only data at or before
+      as_of_utc; target is the next reading when it arrives 18-30h later, otherwise null.
+    data_tests:
+      - target_within_window
+      - unique_combination:
+          arguments:
+            columns: [geonameid, as_of_utc]
+    columns:
+      - name: geonameid
+        data_tests: [not_null]
+      - name: as_of_utc
+        data_tests: [not_null]
+      - name: pm25_lag_0
+        data_tests: [not_null]
+      - name: dow
+        data_tests:
+          - accepted_range: { arguments: { min_value: 1, max_value: 7 } }
+      - name: target
+        data_tests:
+          - accepted_range: { arguments: { min_value: 0, max_value: 20000 } }

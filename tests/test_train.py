@@ -18,12 +18,14 @@ def make_features(n_cities: int = 4, n_days: int = 90, seed: int = 0) -> pl.Data
         for d in range(n_days):
             row = {c: float(rng.normal()) for c in FEATURE_COLS if c not in CATEGORICAL_COLS}
             row["pm25_lag_0"] = level * rng.uniform(0.7, 1.3)
-            row["target_pm25"] = max(0.1, row["pm25_lag_0"] * 0.9 + rng.normal(0, 2))
+            row["target"] = max(0.1, row["pm25_lag_0"] * 0.9 + rng.normal(0, 2))
             row.update(
                 geonameid=city,
                 as_of_utc=start + timedelta(days=d),
                 continent=["AS", "EU"][city % 2],
                 pm25_roll_mean_7=level,
+                pm10_lag_0=level * 2,
+                pm10_roll_mean_7=level * 2,
             )
             rows.append(row)
     return pl.DataFrame(rows)
@@ -34,9 +36,9 @@ def test_every_candidate_fits_and_predicts(name):
     df = make_features()
     preds = fit(df, name).predict(df.head(20))
     assert len(preds) == 20
-    assert (preds["pm25_pred"] >= 0).all()
-    assert (preds["pm25_p10"] <= preds["pm25_pred"]).all()
-    assert (preds["pm25_pred"] <= preds["pm25_p90"]).all()
+    assert (preds["pred"] >= 0).all()
+    assert (preds["p10"] <= preds["pred"]).all()
+    assert (preds["pred"] <= preds["p90"]).all()
 
 
 def test_backtest_scores_every_model_and_baseline():
@@ -63,3 +65,9 @@ def test_promotion_needs_a_2_percent_gain_over_the_champion():
     assert should_promote(challenger, None)
     assert should_promote(challenger, {"mae": 3.1})
     assert not should_promote(challenger, {"mae": 3.02})
+
+
+def test_backtest_works_for_pm10_target():
+    df = make_features().with_columns(pl.col("target") * 2)
+    results = backtest(df, candidates=["ridge"], n_folds=1, test_days=7, target="pm10")
+    assert {"persistence", "ridge"} <= set(results["model"])

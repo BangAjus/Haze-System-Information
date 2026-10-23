@@ -1,4 +1,7 @@
-"""Model candidates, baselines, and a rolling-origin backtest for the PM2.5 forecast.
+"""Model candidates, baselines, and a rolling-origin backtest for the daily forecasts.
+
+Works for any target pollutant (PM2.5 or PM10): the dbt feature tables name the column to
+predict `target`, and `target` here picks the matching baselines and AQI breakpoints.
 
 Several model types compete on the same backtest. The best one that beats the persistence
 baseline is trained on all data and becomes the challenger.
@@ -25,9 +28,16 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
 from ml.features import CATEGORICAL_COLS, FEATURE_COLS
-from shared.aqi import pm25_to_aqi
+from shared.aqi import to_aqi
 
 CALIBRATION_SHARE = 0.10  # newest share of training rows used to measure errors for the range
+TARGET_COL = "target"
+
+# Per target: (persistence column, 7-reading mean column) used by the baselines
+BASELINE_COLS = {
+    "pm25": ("pm25_lag_0", "pm25_roll_mean_7"),
+    "pm10": ("pm10_lag_0", "pm10_roll_mean_7"),
+}
 
 
 # --- Candidate models --------------------------------------------------------------------
@@ -105,7 +115,7 @@ CANDIDATES: dict[str, Callable[[list[str]], RegressorMixin]] = {
 
 
 @dataclass
-class PM25Model:
+class ForecastModel:
     name: str
     estimator: RegressorMixin
     feature_cols: list[str]
@@ -113,17 +123,22 @@ class PM25Model:
     resid_lo: float
     resid_hi: float
     meta: dict = field(default_factory=dict)
+    target: str = "pm25"
 
     def predict(self, df: pl.DataFrame) -> pd.DataFrame:
         X, _ = to_xy(df, self.feature_cols)
         log_pred = self.estimator.predict(X)
         return pd.DataFrame(
             {
-                "pm25_pred": np.expm1(log_pred).clip(min=0),
-                "pm25_p10": np.expm1(log_pred + min(self.resid_lo, 0)).clip(min=0),
-                "pm25_p90": np.expm1(log_pred + max(self.resid_hi, 0)).clip(min=0),
+                "pred": np.expm1(log_pred).clip(min=0),
+                "p10": np.expm1(log_pred + min(self.resid_lo, 0)).clip(min=0),
+                "p90": np.expm1(log_pred + max(self.resid_hi, 0)).clip(min=0),
             }
         )
+
+
+# Models saved before PM10 was a target were pickled under this name
+PM25Model = ForecastModel
 
 
 def to_xy(df: pl.DataFrame, cols: list[str] = FEATURE_COLS) -> tuple[pd.DataFrame, np.ndarray]:
@@ -131,13 +146,15 @@ def to_xy(df: pl.DataFrame, cols: list[str] = FEATURE_COLS) -> tuple[pd.DataFram
     for c in CATEGORICAL_COLS:
         if c in X:
             X[c] = X[c].astype("category")
-    y = np.log1p(df["target_pm25"].to_numpy()) if "target_pm25" in df.columns else None
+    y = np.log1p(df[TARGET_COL].to_numpy()) if TARGET_COL in df.columns else None
     return X, y
 
 
-def fit(train: pl.DataFrame, name: str = "hgb", cols: list[str] = FEATURE_COLS) -> PM25Model:
+def fit(
+    train: pl.DataFrame, name: str = "hgb", cols: list[str] = FEATURE_COLS, target: str = "pm25"
+) -> ForecastModel:
     """Fit one candidate, with a p10-p90 range from its errors on the newest training rows."""
-    train = train.drop_nulls("target_pm25").sort("as_of_utc")
+    train = train.drop_nulls(TARGET_COL).sort("as_of_utc")
     n_cal = max(1, int(train.height * CALIBRATION_SHARE))
     early, cal = train.head(train.height - n_cal), train.tail(n_cal)
 
@@ -148,15 +165,15 @@ def fit(train: pl.DataFrame, name: str = "hgb", cols: list[str] = FEATURE_COLS) 
 
     X, y = to_xy(train, cols)
     estimator = CANDIDATES[name](cols).fit(X, y)
-    return PM25Model(name, estimator, list(cols), float(lo), float(hi))
+    return ForecastModel(name, estimator, list(cols), float(lo), float(hi), target=target)
 
 
 # --- Evaluation --------------------------------------------------------------------------
 
 
-def score(actual: np.ndarray, pred: np.ndarray) -> dict[str, float]:
-    aqi_a = np.array([pm25_to_aqi(v) for v in actual])
-    aqi_p = np.array([pm25_to_aqi(v) for v in pred])
+def score(actual: np.ndarray, pred: np.ndarray, target: str = "pm25") -> dict[str, float]:
+    aqi_a = np.array([to_aqi(v, target) for v in actual])
+    aqi_p = np.array([to_aqi(v, target) for v in pred])
     return {
         "mae": float(np.mean(np.abs(actual - pred))),
         "rmse": float(np.sqrt(np.mean((actual - pred) ** 2))),
@@ -170,13 +187,15 @@ def backtest(
     cols: list[str] = FEATURE_COLS,
     n_folds: int = 4,
     test_days: int = 14,
+    target: str = "pm25",
 ) -> pl.DataFrame:
     """Expanding-window backtest. Never split randomly: the test set is always in the future.
 
     Returns one row per fold per model, including the two baselines.
     """
     candidates = candidates or list(CANDIDATES)
-    data = features.drop_nulls("target_pm25").sort("as_of_utc")
+    lag_col, mean_col = BASELINE_COLS[target]
+    data = features.drop_nulls(TARGET_COL).sort("as_of_utc")
     end = data["as_of_utc"].max()
     rows = []
     for k in range(n_folds, 0, -1):
@@ -187,23 +206,22 @@ def backtest(
         if train.is_empty() or test.is_empty():
             continue
 
-        actual = test["target_pm25"].to_numpy()
+        actual = test[TARGET_COL].to_numpy()
         fold = dict(fold=k, test_start=test_start, n_test=len(actual))
 
-        rows.append(
-            {"model": "persistence", **fold, **score(actual, test["pm25_lag_0"].to_numpy())}
-        )
-        city_mean_7 = test["pm25_roll_mean_7"].fill_null(test["pm25_lag_0"]).to_numpy()
-        rows.append({"model": "city_mean_7", **fold, **score(actual, city_mean_7)})
+        persistence = test[lag_col].to_numpy()
+        rows.append({"model": "persistence", **fold, **score(actual, persistence, target)})
+        city_mean_7 = test[mean_col].fill_null(test[lag_col]).to_numpy()
+        rows.append({"model": "city_mean_7", **fold, **score(actual, city_mean_7, target)})
 
         for name in candidates:
-            preds = fit(train, name, cols).predict(test)
-            covered = (actual >= preds["pm25_p10"]) & (actual <= preds["pm25_p90"])
+            preds = fit(train, name, cols, target).predict(test)
+            covered = (actual >= preds["p10"]) & (actual <= preds["p90"])
             rows.append(
                 {
                     "model": name,
                     **fold,
-                    **score(actual, preds["pm25_pred"].to_numpy()),
+                    **score(actual, preds["pred"].to_numpy(), target),
                     "interval_coverage": float(covered.mean()),
                 }
             )

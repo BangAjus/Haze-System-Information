@@ -31,6 +31,7 @@ ml = [
     "scikit-learn>=1.5",
     "pandas>=2.2",
     "mlflow-skinny>=3.0",
+    "torch>=2.4",  # LSTM/GRU candidates; Docker installs the CPU-only build
 ]
 api = [
     "fastapi>=0.115",

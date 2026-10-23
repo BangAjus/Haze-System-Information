@@ -50,6 +50,25 @@ CREATE TABLE IF NOT EXISTS raw.openweather_snapshots (
 CREATE INDEX IF NOT EXISTS openweather_snapshots_ingested_at
     ON raw.openweather_snapshots (_ingested_at);
 
+-- Hourly air pollution history from OpenWeather (pipeline/assets/openweather.py, backfill).
+-- Pollutants only: weather history isn't on the free tier.
+CREATE TABLE IF NOT EXISTS raw.openweather_air_history (
+    geonameid        bigint NOT NULL,
+    air_time_unix    bigint NOT NULL,
+    aqi              bigint,
+    pm2_5            double precision,
+    pm10             double precision,
+    co               double precision,
+    "no"             double precision,
+    no2              double precision,
+    o3               double precision,
+    so2              double precision,
+    nh3              double precision,
+    _ingested_at     timestamptz NOT NULL,
+    _dagster_run_id  text,
+    PRIMARY KEY (geonameid, air_time_unix)
+);
+
 -- Pipeline run metadata, written by the ops_recorder sensor
 CREATE TABLE IF NOT EXISTS ops.pipeline_runs (
     run_id         text PRIMARY KEY,
@@ -89,6 +108,8 @@ CREATE TABLE IF NOT EXISTS ops.check_results (
 CREATE TABLE IF NOT EXISTS ml.model_runs (
     model_version      text PRIMARY KEY,
     model_type         text,
+    track              text NOT NULL DEFAULT 'daily',   -- daily | hourly
+    target             text NOT NULL DEFAULT 'pm25',    -- pm25 | pm10
     mlflow_run_id      text,
     trained_at         timestamptz NOT NULL DEFAULT now(),
     train_start        date,
@@ -109,9 +130,41 @@ CREATE TABLE IF NOT EXISTS ml.forecasts (
     pm25_pred        numeric NOT NULL,
     pm25_p10         numeric,
     pm25_p90         numeric,
-    aqi_pred         smallint,
-    model_version    text NOT NULL,
+    aqi_pred         smallint,       -- worse of the PM2.5 and PM10 levels
+    model_version    text NOT NULL,  -- PM2.5 model
+    pm10_pred        numeric,
+    pm10_p10         numeric,
+    pm10_p90         numeric,
+    pm10_model_version text,
     PRIMARY KEY (geonameid, issued_at_utc, horizon_h)
+);
+
+-- Every candidate's backtest from each training run, and the hourly forecasts
+CREATE TABLE IF NOT EXISTS ml.model_candidates (
+    trained_at         timestamptz NOT NULL,
+    track              text NOT NULL,
+    target             text NOT NULL,
+    model              text NOT NULL,
+    mae                double precision,
+    rmse               double precision,
+    aqi_acc            double precision,
+    interval_coverage  double precision,
+    baseline_mae       double precision,
+    selected           boolean NOT NULL DEFAULT false,
+    mlflow_run_id      text,
+    PRIMARY KEY (trained_at, track, target, model)
+);
+CREATE TABLE IF NOT EXISTS ml.forecasts_hourly (
+    geonameid        bigint NOT NULL,
+    issued_at_utc    timestamptz NOT NULL,
+    target           text NOT NULL,
+    horizon_h        smallint NOT NULL,
+    target_time_utc  timestamptz NOT NULL,
+    pred             double precision NOT NULL,
+    p10              double precision,
+    p90              double precision,
+    model_version    text NOT NULL,
+    PRIMARY KEY (geonameid, issued_at_utc, target, horizon_h)
 );
 
 -- iOS push alerts (phase 5)

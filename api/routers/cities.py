@@ -96,8 +96,9 @@ def forecast(geonameid: int):
     )
     rows = fetch_all(
         """
-        select horizon_h, target_time_utc, pm25_pred, pm25_p10, pm25_p90, aqi_pred,
-               model_version, issued_at_utc
+        select horizon_h, target_time_utc, pm25_pred, pm25_p10, pm25_p90,
+               pm10_pred, pm10_p10, pm10_p90, aqi_pred,
+               model_version, pm10_model_version, issued_at_utc
         from ml.forecasts
         where geonameid = :id
           and issued_at_utc = (select max(issued_at_utc) from ml.forecasts where geonameid = :id)
@@ -105,18 +106,48 @@ def forecast(geonameid: int):
         """,
         id=geonameid,
     )
+    hourly = fetch_all(
+        """
+        select distinct on (target) target, horizon_h, target_time_utc, pred, p10, p90,
+               model_version, issued_at_utc
+        from ml.forecasts_hourly
+        where geonameid = :id
+        order by target, issued_at_utc desc
+        """,
+        id=geonameid,
+    )
+
+    def band(pred, lo, hi):
+        return None if pred is None else {"pred": pred, "p10": lo, "p90": hi}
+
     return {
         "city": city,
         "issued_at": rows[0]["issued_at_utc"] if rows else None,
-        "model_version": rows[0]["model_version"] if rows else None,
+        "models": {
+            "pm25": rows[0]["model_version"] if rows else None,
+            "pm10": rows[0]["pm10_model_version"] if rows else None,
+        },
+        # Next-reading forecast from the daily models (about 24h ahead)
         "forecasts": [
             {
                 "horizon_h": r["horizon_h"],
                 "target_time": r["target_time_utc"],
-                "pm25": {"pred": r["pm25_pred"], "p10": r["pm25_p10"], "p90": r["pm25_p90"]},
+                "pm25": band(r["pm25_pred"], r["pm25_p10"], r["pm25_p90"]),
+                "pm10": band(r["pm10_pred"], r["pm10_p10"], r["pm10_p90"]),
                 "aqi": {"level": r["aqi_pred"], "label": AQI_LABELS.get(r["aqi_pred"])},
             }
             for r in rows
         ],
+        # 24h-ahead forecast from the hourly models (refreshed every hour)
+        "hourly": {
+            h["target"]: {
+                "horizon_h": h["horizon_h"],
+                "target_time": h["target_time_utc"],
+                "issued_at": h["issued_at_utc"],
+                "model_version": h["model_version"],
+                **band(h["pred"], h["p10"], h["p90"]),
+            }
+            for h in hourly
+        },
         "attribution": ATTRIBUTION,
     }

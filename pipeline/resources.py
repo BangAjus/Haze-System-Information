@@ -53,12 +53,12 @@ class OpenWeatherResource(ConfigurableResource):
     calls_per_minute: int = 50  # free tier allows 60; keep a margin
     base_url: str = "https://api.openweathermap.org/data/2.5"
 
-    def _get(self, client, path: str, lat: float, lon: float) -> dict:
+    def _get(self, client, path: str, lat: float, lon: float, **extra) -> dict:
         import time
 
         import httpx
 
-        params = {"lat": lat, "lon": lon, "units": "metric", "appid": self.api_key}
+        params = {"lat": lat, "lon": lon, "units": "metric", "appid": self.api_key, **extra}
         for attempt in range(4):
             started = time.monotonic()
             try:
@@ -94,3 +94,9 @@ class OpenWeatherResource(ConfigurableResource):
                 if log and i % 100 == 0:
                     log.info(f"Fetched {i}/{len(cities)} cities ({len(failures)} failed)")
         return results, failures
+
+    def air_history(self, client, lat: float, lon: float, start: int, end: int) -> list[dict]:
+        """Hourly air pollution between two unix times. One call covers a whole year."""
+        if not self.api_key:
+            raise ValueError("OPENWEATHER_API_KEY is not set")
+        return self._get(client, "air_pollution/history", lat, lon, start=start, end=end)["list"]

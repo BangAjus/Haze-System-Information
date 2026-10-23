@@ -18,6 +18,18 @@ run_coordinator:
       - key: haze/exclusive
         value: ingest
         limit: 1
+      # One OpenWeather job at a time (hourly collection, backfill): shared rate limit
+      - key: haze/openweather
+        value: api
+        limit: 1
+
+# Cancels runs that exceed their job's dagster/max_runtime tag (set in pipeline/jobs.py).
+# Mainly for runs whose worker died, e.g. when containers restart mid-run: without this they
+# stay "STARTED" forever and block the one-at-a-time queues above.
+run_monitoring:
+  enabled: true
+  start_timeout_seconds: 300
+  poll_interval_seconds: 120
 
 telemetry:
   enabled: false

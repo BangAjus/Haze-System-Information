@@ -17,37 +17,70 @@ from shared.config import get_settings
 
 ingest_and_transform = AssetSelection.groups("ingest", "transform")
 daily_ml_assets = AssetSelection.assets(
-    ["ml", "features_pm25"], ["ml", "forecasts"], ["ml", "forecast_accuracy"]
+    ["ml", "features_pm25"],
+    ["ml", "features_pm10"],
+    ["ml", "forecasts"],
+    ["ml", "forecast_accuracy"],
+    ["ml", "drift"],
 )
 
 # The run queue allows one run with this tag at a time (see infra/dagster/dagster.yaml), so
 # two loads (Kaggle daily, OpenWeather hourly) never run dbt build or touch raw at once.
 INGEST_TAGS = {"haze/exclusive": "ingest"}
+# One OpenWeather job at a time too, so two jobs never share the 60 calls/minute limit
+OPENWEATHER_TAGS = {"haze/openweather": "api"}
+
+
+def max_runtime(minutes: int) -> dict:
+    """Run monitoring cancels the run after this long (frees the queue if a worker died)."""
+    return {"dagster/max_runtime": str(minutes * 60)}
+
 
 daily_ingest = define_asset_job(
     "daily_ingest",
     selection=ingest_and_transform,
-    tags=INGEST_TAGS,
+    tags={**INGEST_TAGS, **max_runtime(45)},
     description="Download the latest Kaggle file, load raw, run dbt build.",
 )
 
 hourly_openweather = define_asset_job(
     "hourly_openweather",
-    selection=AssetSelection.groups("ingest_hourly", "transform"),
-    tags=INGEST_TAGS,
+    # Collect, rebuild the warehouse, then refresh the hourly 24h-ahead forecasts
+    selection=AssetSelection.groups("ingest_hourly", "transform")
+    | AssetSelection.assets(["ml", "forecasts_hourly"]),
+    tags={**INGEST_TAGS, **OPENWEATHER_TAGS, **max_runtime(55)},
     description="Collect current weather and air pollution for every active city, run dbt build.",
+)
+
+backfill_air_history = define_asset_job(
+    "backfill_air_history",
+    selection=AssetSelection.groups("backfill"),
+    tags={**OPENWEATHER_TAGS, **max_runtime(180)},
+    description="One-off: fetch hourly pollution history for every active city (manual).",
 )
 
 daily_ml = define_asset_job(
     "daily_ml",
     selection=daily_ml_assets,
+    tags=max_runtime(60),
     description="Rebuild features, forecast every city, score past forecasts.",
 )
 
 weekly_retrain = define_asset_job(
     "weekly_retrain",
-    selection=AssetSelection.assets(["ml", "features_pm25"], ["ml", "pm25_model"]),
-    description="Backtest every candidate; train the best and promote it if it passes the rule.",
+    selection=AssetSelection.assets(
+        ["ml", "features_pm25"],
+        ["ml", "features_pm10"],
+        ["ml", "pm25_model"],
+        ["ml", "pm10_model"],
+        ["ml", "hourly_pm25_model"],
+        ["ml", "hourly_pm10_model"],
+    ),
+    tags=max_runtime(240),
+    # One model at a time: each hourly model holds ~5M rows in memory, and two in parallel
+    # exceeded Docker's 8 GB (the run process was killed with no Python error).
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
+    description="Both tracks, both pollutants: backtest every candidate, promote the best.",
 )
 
 FALLBACK_SKIP_WINDOW = timedelta(hours=20)

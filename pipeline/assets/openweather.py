@@ -25,11 +25,12 @@ from dagster import (
 
 from pipeline.resources import OpenWeatherResource
 from shared.config import get_settings
-from shared.db import read_sql, write_table
+from shared.db import insert_new_rows, read_sql, write_table
 
 CALLS_PER_CITY = 2  # Current Weather + Air Pollution
 MONTHLY_CALL_BUDGET = 950_000  # free tier is 1,000,000; keep a margin for retries and tests
 MIN_SUCCESS_SHARE = 0.98
+POLLUTANTS = ["pm2_5", "pm10", "co", "no", "no2", "o3", "so2", "nh3"]
 
 
 class CollectConfig(Config):
@@ -174,4 +175,77 @@ def most_cities_collected() -> AssetCheckResult:
         passed=share >= MIN_SUCCESS_SHARE,
         severity=AssetCheckSeverity.WARN,
         metadata={"collected": collected, "active_cities": active, "share": round(share, 4)},
+    )
+
+
+class BackfillConfig(Config):
+    """How far back to fetch. One API call per city covers the whole window (up to a year)."""
+
+    days: int = 365
+    max_cities: int | None = None
+
+
+@asset(group_name="backfill", compute_kind="openweather", key_prefix="raw")
+def openweather_air_history(
+    context: AssetExecutionContext, openweather: OpenWeatherResource, config: BackfillConfig
+) -> MaterializeResult:
+    """Hourly pollution history per active city, for the hourly forecast models.
+
+    Safe to re-run: rows already stored (same city and hour) are skipped. Uses one call per
+    city, so a full backfill of ~584 cities costs ~600 calls of the 1M monthly budget.
+    """
+    import httpx
+
+    cities = read_sql(
+        "select geonameid, lat, lon from core.dim_city where is_active order by population desc"
+    ).to_dicts()
+    if config.max_cities:
+        cities = cities[: config.max_cities]
+
+    end = int(datetime.now(UTC).timestamp())
+    start = end - config.days * 86400
+    inserted, fetched, failed, batch = 0, 0, [], []
+
+    def flush():
+        nonlocal inserted, batch
+        if batch:
+            df = pl.DataFrame(batch).with_columns(
+                # Stamped per batch, so dbt's incremental model sees each batch as new
+                pl.lit(datetime.now(UTC)).alias("_ingested_at"),
+                pl.lit(context.run_id).alias("_dagster_run_id"),
+            )
+            inserted += insert_new_rows(
+                df, "openweather_air_history", "raw", key=["geonameid", "air_time_unix"]
+            )
+            batch = []
+
+    with httpx.Client(timeout=60) as client:
+        for i, city in enumerate(cities, 1):
+            try:
+                readings = openweather.air_history(client, city["lat"], city["lon"], start, end)
+            except PermissionError:
+                raise
+            except Exception as exc:
+                failed.append(city["geonameid"])
+                context.log.warning(f"City {city['geonameid']} failed: {exc}")
+                continue
+            fetched += len(readings)
+            batch += [
+                {"geonameid": city["geonameid"], "air_time_unix": r["dt"], "aqi": r["main"]["aqi"]}
+                | {k: r["components"].get(k) for k in POLLUTANTS}
+                for r in readings
+            ]
+            if i % 25 == 0:
+                flush()
+                context.log.info(f"{i}/{len(cities)} cities, {inserted:,} new rows")
+    flush()
+
+    return MaterializeResult(
+        metadata={
+            "cities": len(cities),
+            "cities_failed": len(failed),
+            "readings_fetched": fetched,
+            "rows_inserted": inserted,
+            "window_days": config.days,
+        }
     )

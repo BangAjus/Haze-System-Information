@@ -43,3 +43,15 @@ replaces the table each run, and `fct_observation` merges incrementally.
 ## PM2.5 distribution (µg/m³)
 
 Median 4.4, p90 25.7, p99 86.7, max 406.6. No negative values. Temperature range −13.7 to 42.1 °C.
+
+## Hourly history backfill (2026-10-22)
+
+One year of hourly air pollution from OpenWeather's history endpoint: 584 cities, 4.9M rows
+(2025-10-22 to 2026-10-22), about 96% of hours present per city.
+
+- **Sahel dust storms are real, not errors.** Zinder and Maradi (Niger), Kano (Nigeria) and
+  N'Djamena (Chad) reach PM10 up to ~10,000 µg/m³ and PM2.5 ~2,000 µg/m³ during the
+  December–February Harmattan season. The data tests' upper limits (PM2.5 5,000, PM10 20,000)
+  are set to catch broken values, not extreme weather. PM10 p99.99 is ~2,460 µg/m³.
+- **Weather history isn't on the free tier**, so the hourly models use pollutants and calendar
+  features only; the daily models keep the weather features.

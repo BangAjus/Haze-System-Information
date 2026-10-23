@@ -25,3 +25,8 @@ sources:
         freshness:
           warn_after: { count: 3, period: hour }
           error_after: { count: 8, period: hour }
+
+      - name: openweather_air_history
+        description: >
+          Hourly air pollution history from OpenWeather (pollutants only), backfilled once
+          by the Dagster asset raw/openweather_air_history. Re-runs skip existing hours.

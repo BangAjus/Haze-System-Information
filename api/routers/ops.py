@@ -23,7 +23,8 @@ def summary():
           (select count(*) from ops.check_results
              where not passed and checked_at > now() - interval '24 hours') as failed_checks_24h,
           (select avg(abs_error) from ml.forecast_accuracy
-             where target_time_utc > now() - interval '7 days') as model_mae_7d
+             where track = 'daily' and target = 'pm25'
+               and target_time_utc > now() - interval '7 days') as model_mae_7d
         """
     )
 

@@ -54,3 +54,49 @@ def replace_rows(df: pl.DataFrame, table: str, schema: str) -> int:
             engine="sqlalchemy",
         )
     return df.height
+
+
+def insert_new_rows(df: pl.DataFrame, table: str, schema: str, key: list[str]) -> int:
+    """Insert rows whose key isn't in the table yet; skip the rest. Returns rows inserted.
+
+    Makes backfills safe to re-run: overlapping ranges don't create duplicates.
+    """
+    import uuid
+
+    from sqlalchemy import text
+
+    tmp = f"_tmp_{uuid.uuid4().hex[:8]}"
+    cols = ", ".join(f'"{c}"' for c in df.columns)
+    with get_engine().begin() as conn:
+        df.write_database(
+            f"{schema}.{tmp}", connection=conn, if_table_exists="replace", engine="sqlalchemy"
+        )
+        inserted = conn.execute(
+            text(
+                f"insert into {schema}.{table} ({cols}) select {cols} from {schema}.{tmp} "
+                f"on conflict ({', '.join(key)}) do nothing"
+            )
+        ).rowcount
+        conn.execute(text(f"drop table {schema}.{tmp}"))
+    return inserted
+
+
+def read_sql_copy(query: str) -> pl.DataFrame:
+    """Large query results via Postgres COPY, streamed as CSV straight into Polars.
+
+    Much lighter than read_sql for millions of rows: read_sql builds a Python tuple per row
+    first (5M hourly rows peaked at ~4.5 GB that way). Takes a query with no parameters.
+    """
+    import io
+
+    buf = io.BytesIO()
+    raw = get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            with cur.copy(f"COPY ({query}) TO STDOUT WITH (FORMAT csv, HEADER true)") as copy:
+                for chunk in copy:
+                    buf.write(chunk)
+    finally:
+        raw.close()
+    buf.seek(0)
+    return pl.read_csv(buf, try_parse_dates=True)
